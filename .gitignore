@@ -1,0 +1,9 @@
+*.zip
+*.rar
+*.xlsx
+.DS_Store
+Thumbs.db
+tests/reports/*.json
+tests/reports/*.png
+__pycache__/
+*.pyc

@@ -1,0 +1,117 @@
+{
+  "manifest_version": 3,
+  "name": "Maps Export Overlay: Yandex, Google, 2GIS",
+  "version": "1.10.0",
+  "description": "Сбор объектов с карт и досбор подробных данных по URL в фоновых вкладках.",
+  "icons": {
+    "16": "icon.png",
+    "32": "icon.png",
+    "48": "icon.png",
+    "128": "icon.png"
+  },
+  "action": {
+    "default_icon": {
+      "16": "icon.png",
+      "32": "icon.png",
+      "48": "icon.png",
+      "128": "icon.png"
+    },
+    "default_popup": "popup.html"
+  },
+  "background": {
+    "scripts": ["background.js"],
+    "service_worker": "background.js"
+  },
+  "permissions": [
+    "scripting",
+    "activeTab",
+    "storage",
+    "unlimitedStorage",
+    "tabs",
+    "alarms"
+  ],
+  "host_permissions": [
+    "*://yandex.ru/maps/*",
+    "*://*.yandex.ru/maps/*",
+    "*://ya.ru/maps/*",
+    "*://*.ya.ru/maps/*",
+    "*://yandex.com/maps/*",
+    "*://*.yandex.com/maps/*",
+    "*://google.com/maps/*",
+    "*://*.google.com/maps/*",
+    "*://2gis.ru/*",
+    "*://*.2gis.ru/*",
+    "*://2gis.com/*",
+    "*://*.2gis.com/*",
+    "*://catalog.api.2gis.com/*",
+    "*://*.api.2gis.com/*"
+  ],
+  "content_scripts": [
+    {
+      "matches": [
+        "*://yandex.ru/maps/*",
+        "*://*.yandex.ru/maps/*",
+        "*://ya.ru/maps/*",
+        "*://*.ya.ru/maps/*",
+        "*://yandex.com/maps/*",
+        "*://*.yandex.com/maps/*",
+        "*://2gis.ru/*",
+        "*://*.2gis.ru/*",
+        "*://2gis.com/*",
+        "*://*.2gis.com/*"
+      ],
+      "exclude_matches": [
+        "*://yandex.ru/maps/org/*",
+        "*://*.yandex.ru/maps/org/*",
+        "*://ya.ru/maps/org/*",
+        "*://*.ya.ru/maps/org/*",
+        "*://yandex.com/maps/org/*",
+        "*://*.yandex.com/maps/org/*"
+      ],
+      "js": [
+        "xlsx.full.min.js",
+        "content.js",
+        "overlay.js"
+      ],
+      "run_at": "document_idle"
+    },
+    {
+      "matches": [
+        "*://yandex.ru/maps/org/*",
+        "*://*.yandex.ru/maps/org/*",
+        "*://ya.ru/maps/org/*",
+        "*://*.ya.ru/maps/org/*",
+        "*://yandex.com/maps/org/*",
+        "*://*.yandex.com/maps/org/*"
+      ],
+      "js": [
+        "detail_parser.js",
+        "detail_content.js"
+      ],
+      "run_at": "document_idle"
+    },
+    {
+      "matches": [
+        "https://www.google.com/maps/*",
+        "https://maps.google.com/*"
+      ],
+      "js": [
+        "xlsx.full.min.js",
+        "google_content.js",
+        "overlay.js"
+      ],
+      "run_at": "document_idle"
+    }
+  ],
+  "web_accessible_resources": [
+    {
+      "resources": [
+        "sniffer.js",
+        "interceptor.js"
+      ],
+      "matches": [
+        "*://*/*"
+      ]
+    }
+  ]
+}

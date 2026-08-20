@@ -1,0 +1,38 @@
+<!doctype html>
+<html lang="ru">
+<head>
+  <meta charset="utf-8" />
+  <title>Тест парсера деталей</title>
+  <script type="application/ld+json">
+    {
+      "@context": "https://schema.org",
+      "@type": "Hotel",
+      "name": "Отель Север",
+      "telephone": "+7 8152 000-000",
+      "url": "https://hotel.example/",
+      "address": {
+        "@type": "PostalAddress",
+        "postalCode": "183000",
+        "addressLocality": "Мурманск",
+        "streetAddress": "ул. Примерная, 1"
+      },
+      "aggregateRating": { "ratingValue": "4.8", "reviewCount": "123" },
+      "openingHours": ["Mo-Su 00:00-24:00"],
+      "starRating": { "ratingValue": "4" },
+      "checkinTime": "14:00",
+      "checkoutTime": "12:00"
+    }
+  </script>
+</head>
+<body>
+  <h1 class="orgpage-header-view__header">Отель Север</h1>
+  <a class="business-contacts-view__address-link">Мурманск, ул. Примерная, 1</a>
+  <div class="business-categories-view__category">Гостиница</div>
+  <div class="business-working-status-view">Круглосуточно</div>
+  <div class="card-phones-view__number">+7 8152 000-000 Показать телефон</div>
+  <dl><dt>Количество номеров</dt><dd>48 номеров</dd></dl>
+  <dl><dt>Типы номеров</dt><dd>Стандарт, Люкс, Семейный</dd></dl>
+  <script src="../detail_parser.js"></script>
+  <script src="detail_parser.test.js"></script>
+</body>
+</html>

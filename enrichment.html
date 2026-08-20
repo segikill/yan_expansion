@@ -1,0 +1,103 @@
+<!doctype html>
+<html lang="ru">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width,initial-scale=1" />
+  <meta name="theme-color" content="#050713" />
+  <title>Досбор данных по URL</title>
+  <link rel="stylesheet" href="enrichment.css" />
+</head>
+<body>
+  <div id="statusBackdrop" class="status-backdrop" aria-hidden="true">
+    <span id="statusBackdropText">ожидание</span>
+  </div>
+  <main class="shell">
+    <header class="hero">
+      <div>
+        <p class="eyebrow">Maps Export 1.10.0 · Neon Interface</p>
+        <h1>Досбор данных по URL</h1>
+        <p class="lead">Карточки открываются в отдельных неактивных вкладках. Очередь и каждый результат сохраняются локально.</p>
+      </div>
+      <div id="jobBadge" class="badge idle">не запущен</div>
+    </header>
+
+    <section id="alert" class="alert hidden">
+      <div><strong id="alertTitle">CAPTCHA</strong><span id="alertText"></span></div>
+      <button id="btnOpenWorker" class="button warning">Открыть вкладку</button>
+    </section>
+
+    <section class="panel setup">
+      <div class="field">
+        <label for="scope">Обрабатывать</label>
+        <select id="scope">
+          <option value="unprocessed">только без успешных деталей</option>
+          <option value="errors">только ошибки</option>
+          <option value="all">все URL заново</option>
+        </select>
+      </div>
+      <div class="field compact">
+        <label for="workers">Вкладок</label>
+        <select id="workers">
+          <option value="1">1</option>
+          <option value="2" selected>2</option>
+          <option value="4">4</option>
+        </select>
+      </div>
+      <div class="field compact">
+        <label for="maxAttempts">Попыток</label>
+        <select id="maxAttempts">
+          <option value="1">1</option>
+          <option value="2">2</option>
+          <option value="3" selected>3</option>
+          <option value="4">4</option>
+          <option value="5">5</option>
+        </select>
+      </div>
+      <div class="field compact">
+        <label for="timeout">Таймаут, с</label>
+        <input id="timeout" type="number" min="10" max="90" value="25" />
+      </div>
+      <button id="btnStart" class="button primary">Запустить</button>
+    </section>
+
+    <section class="stats" aria-label="Прогресс">
+      <article><span id="statTotal">0</span><small>в очереди</small></article>
+      <article class="success"><span id="statSuccess">0</span><small>успешно</small></article>
+      <article><span id="statActive">0</span><small>в работе</small></article>
+      <article class="error"><span id="statError">0</span><small>ошибок</small></article>
+      <article><span id="statSpeed">—</span><small>объектов/мин</small></article>
+      <article><span id="statEta">—</span><small>осталось</small></article>
+    </section>
+
+    <section class="panel progress-panel">
+      <div class="progress-head"><span id="progressText">Готово к запуску</span><strong id="progressPercent">0%</strong></div>
+      <div class="progress-track"><div id="progressBar" class="progress-bar"></div></div>
+      <div class="toolbar">
+        <button id="btnPause" class="button quiet">Пауза</button>
+        <button id="btnResume" class="button quiet">Продолжить</button>
+        <button id="btnRetry" class="button quiet">Повторить ошибки</button>
+        <button id="btnStop" class="button danger">Остановить</button>
+        <button id="btnExport" class="button export">XLSX с деталями</button>
+      </div>
+      <p id="statusText" class="status-text"></p>
+    </section>
+
+    <section>
+      <div class="section-title"><h2>Рабочие вкладки</h2><span id="baseCount">0 объектов в базовом сборе</span></div>
+      <div id="workersList" class="workers empty">Нет запущенных вкладок</div>
+    </section>
+
+    <section>
+      <div class="section-title"><h2>Очередь</h2><span>последние 200 задач</span></div>
+      <div class="table-wrap">
+        <table>
+          <thead><tr><th>Статус</th><th>Организация</th><th>org_id</th><th>Попытки</th><th>Ошибка</th></tr></thead>
+          <tbody id="tasksBody"><tr><td colspan="5" class="empty-row">Очередь ещё не создана</td></tr></tbody>
+        </table>
+      </div>
+    </section>
+  </main>
+  <script src="xlsx.full.min.js"></script>
+  <script src="enrichment.js"></script>
+</body>
+</html>
