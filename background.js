@@ -138,7 +138,7 @@
   }
 
   function publicState(job, resultCount, baseCount) {
-    return { job, result_count: resultCount, base_count: baseCount.total, base_counts: baseCount, controller_version: "1.12.3" };
+    return { job, result_count: resultCount, base_count: baseCount.total, base_counts: baseCount, controller_version: "1.12.4" };
   }
 
   async function getState() {

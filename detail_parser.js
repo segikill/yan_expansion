@@ -1,7 +1,7 @@
 (function initMapsDetailParser(global) {
   "use strict";
 
-  const PARSER_VERSION = "1.12.3";
+  const PARSER_VERSION = "1.12.4";
   const MAX_ATTRIBUTE_PAIRS = 160;
 
   const cleanText = (value) => String(value ?? "").replace(/\s+/g, " ").trim();

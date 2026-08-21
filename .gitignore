@@ -5,5 +5,6 @@
 Thumbs.db
 tests/reports/*.json
 tests/reports/*.png
+release/
 __pycache__/
 *.pyc

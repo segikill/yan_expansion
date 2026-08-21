@@ -1,20 +1,20 @@
 {
   "manifest_version": 3,
   "name": "Maps Export Overlay: Yandex, Google, 2GIS",
-  "version": "1.12.3",
+  "version": "1.12.4",
   "description": "Сбор объектов с карт и досбор подробных данных по URL в фоновых вкладках.",
   "icons": {
-    "16": "icon.png",
-    "32": "icon.png",
-    "48": "icon.png",
-    "128": "icon.png"
+    "16": "icons/icon-16.png",
+    "32": "icons/icon-32.png",
+    "48": "icons/icon-48.png",
+    "128": "icons/icon-128.png"
   },
   "action": {
     "default_icon": {
-      "16": "icon.png",
-      "32": "icon.png",
-      "48": "icon.png",
-      "128": "icon.png"
+      "16": "icons/icon-16.png",
+      "32": "icons/icon-32.png",
+      "48": "icons/icon-48.png",
+      "128": "icons/icon-128.png"
     },
     "default_popup": "popup.html"
   },
@@ -31,7 +31,7 @@
     "https://*.yandex.ru/maps/*",
     "https://*.ya.ru/maps/*",
     "https://*.yandex.com/maps/*",
-    "https://*.google.com/maps/*",
+    "https://www.google.com/maps/*",
     "https://maps.google.com/*",
     "https://*.2gis.ru/*",
     "https://*.2gis.com/*"

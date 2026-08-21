@@ -16,7 +16,7 @@ function setStatus(text) {
 }
 
 function setBusy(flag) {
-  for (const id of ["btnShowPanel", "btnEnrichment", "btnExport", "btnClear", "btnInstructions"]) {
+  for (const id of ["btnShowPanel", "btnEnrichment", "btnExport", "btnClear", "btnInstructions", "btnPrivacy"]) {
     const el = $(id);
     if (el) el.disabled = !!flag;
   }
@@ -188,6 +188,11 @@ async function openInstructions() {
   window.close();
 }
 
+async function openPrivacy() {
+  await chrome.tabs.create({ url: chrome.runtime.getURL("privacy.html") });
+  window.close();
+}
+
 async function showPanel() {
   setBusy(true);
   try {
@@ -237,6 +242,7 @@ document.addEventListener("DOMContentLoaded", async () => {
   });
   $("btnClear").addEventListener("click", clearSession);
   $("btnInstructions").addEventListener("click", openInstructions);
+  $("btnPrivacy").addEventListener("click", openPrivacy);
   try {
     await refreshStats();
   } catch (error) {

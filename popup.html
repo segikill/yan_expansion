@@ -92,6 +92,17 @@
     }
     .card b { display: block; overflow: hidden; color: #f6fbff; font-size: 20px; line-height: 1; font-variant-numeric: tabular-nums; letter-spacing: -.045em; text-overflow: ellipsis; }
     .card span { display: block; margin-top: 6px; overflow: hidden; color: var(--muted); font-size: 9px; font-weight: 650; text-overflow: ellipsis; white-space: nowrap; }
+    .privacy-note {
+      margin-bottom: 10px;
+      padding: 10px 11px;
+      border: 1px solid rgba(55, 214, 255, .14);
+      border-radius: 11px;
+      color: #9eb0c6;
+      background: rgba(55, 214, 255, .045);
+      font-size: 10px;
+      line-height: 1.45;
+    }
+    .privacy-note b { color: #ccefff; }
     .actions { display: grid; gap: 7px; }
     button {
       min-height: 38px;
@@ -137,7 +148,7 @@
         <span class="brand-mark" aria-hidden="true"><i></i><i></i><i></i></span>
         <div>
           <div class="eyebrow">Сбор данных с карт</div>
-          <div class="title">Maps Export <span class="version">1.12.3</span></div>
+          <div class="title">Maps Export <span class="version">1.12.4</span></div>
         </div>
       </div>
       <div class="source-badge" id="source" title="Текущая вкладка">карта не открыта</div>
@@ -150,6 +161,10 @@
       <div class="card"><b id="detailCount">0</b><span>с деталями</span></div>
     </section>
 
+    <aside class="privacy-note" aria-label="Обработка данных">
+      <b>Локальная обработка.</b> Расширение читает карточки и URL только на поддерживаемых картах, сохраняет их в браузере и не отправляет разработчику.
+    </aside>
+
     <section class="actions" aria-label="Действия">
       <button type="button" id="btnShowPanel" class="primary">Открыть панель на карте</button>
       <button type="button" id="btnEnrichment" class="secondary">Досбор деталей по URL</button>
@@ -158,6 +173,7 @@
         <button type="button" id="btnClear" class="danger">Сбросить сессию</button>
       </div>
       <button type="button" id="btnInstructions" class="ghost">Как пользоваться</button>
+      <button type="button" id="btnPrivacy" class="ghost">Конфиденциальность и данные</button>
     </section>
 
     <div id="status" class="status" role="status" aria-live="polite">Результаты сохраняются локально в браузере.</div>

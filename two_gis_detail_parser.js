@@ -1,7 +1,7 @@
 (function init2gisDetailParser(global) {
   "use strict";
 
-  const PARSER_VERSION = "1.12.3";
+  const PARSER_VERSION = "1.12.4";
   const DAYS = { Mon: "Понедельник", Tue: "Вторник", Wed: "Среда", Thu: "Четверг", Fri: "Пятница", Sat: "Суббота", Sun: "Воскресенье" };
   const clean = (value) => String(value == null ? "" : value).replace(/\s+/g, " ").trim();
   const unique = (values) => Array.from(new Set((values || []).map(clean).filter(Boolean)));

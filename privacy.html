@@ -1,0 +1,77 @@
+<!doctype html>
+<html lang="ru">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width,initial-scale=1" />
+  <meta name="theme-color" content="#07111f" />
+  <title>Maps Export — конфиденциальность и данные</title>
+  <style>
+    :root { color-scheme: dark; --bg:#06101d; --surface:#0b192a; --line:rgba(138,165,197,.18); --text:#edf5ff; --muted:#9aabc0; --cyan:#37d6ff; --green:#43e6a5; }
+    * { box-sizing:border-box; }
+    body { margin:0; min-height:100vh; color:var(--text); background:radial-gradient(circle at 12% -10%,rgba(55,214,255,.15),transparent 34rem),linear-gradient(160deg,#081624,var(--bg) 62%,#050b14); font:15px/1.65 Inter,system-ui,-apple-system,"Segoe UI",Arial,sans-serif; }
+    main { width:min(880px,calc(100% - 32px)); margin:0 auto; padding:42px 0 64px; }
+    .eyebrow { color:#9deeff; font-size:11px; font-weight:800; letter-spacing:.14em; text-transform:uppercase; }
+    h1 { margin:8px 0 10px; font-size:clamp(30px,5vw,48px); line-height:1.08; letter-spacing:-.045em; }
+    .lead { margin:0 0 24px; color:var(--muted); }
+    .notice { margin-bottom:16px; padding:16px 18px; border:1px solid rgba(67,230,165,.23); border-radius:16px; color:#c7f9e5; background:rgba(67,230,165,.06); }
+    .grid { display:grid; grid-template-columns:repeat(2,minmax(0,1fr)); gap:14px; }
+    section { padding:20px; border:1px solid var(--line); border-radius:17px; background:linear-gradient(180deg,rgba(13,28,47,.94),rgba(8,19,33,.94)); }
+    section.wide { grid-column:1/-1; }
+    h2 { margin:0 0 8px; font-size:17px; }
+    p { margin:0; color:var(--muted); }
+    ul { margin:8px 0 0; padding-left:20px; color:var(--muted); }
+    li + li { margin-top:5px; }
+    a { color:var(--cyan); }
+    footer { margin-top:16px; color:#7f91a8; font-size:12px; }
+    @media (max-width:700px) { .grid{grid-template-columns:1fr} section.wide{grid-column:auto} }
+  </style>
+</head>
+<body>
+  <main>
+    <div class="eyebrow">Maps Export · версия 1.12.4</div>
+    <h1>Конфиденциальность и данные</h1>
+    <p class="lead">Краткое раскрытие того, какие сведения обрабатывает расширение и зачем они нужны.</p>
+
+    <div class="notice"><strong>Всё хранится локально.</strong> Расширение не отправляет собранные карточки, URL, настройки или результаты разработчику, рекламным системам и внешней аналитике.</div>
+
+    <div class="grid">
+      <section>
+        <h2>Что обрабатывается</h2>
+        <ul>
+          <li>содержимое публичных карточек организаций;</li>
+          <li>URL карточек на поддерживаемых картах;</li>
+          <li>названия, адреса, контакты, категории, рейтинги, графики, координаты и особенности;</li>
+          <li>состояние сессии, очереди и настройки интерфейса.</li>
+        </ul>
+      </section>
+
+      <section>
+        <h2>Для чего</h2>
+        <p>Только для базового сбора, подробного досбора по URL, восстановления очереди и формирования XLSX по команде пользователя.</p>
+      </section>
+
+      <section>
+        <h2>Где хранится</h2>
+        <p>В локальном хранилище браузера до явного сброса пользователем, удаления расширения или очистки данных браузера.</p>
+      </section>
+
+      <section>
+        <h2>Что не собирается</h2>
+        <p>Пароли, платёжные и медицинские сведения, личные сообщения, файлы пользователя и история страниц за пределами заявленных картографических сервисов.</p>
+      </section>
+
+      <section class="wide">
+        <h2>Ограниченное использование</h2>
+        <p>Использование данных соответствует Chrome Web Store User Data Policy, включая требования Limited Use. Данные используются только для заявленной пользовательской функции, не продаются, не применяются для рекламы, кредитования или профилирования и не передаются третьим лицам.</p>
+      </section>
+
+      <section class="wide">
+        <h2>Контакты и полная политика</h2>
+        <p>Полная актуальная редакция: <a href="https://github.com/segikill/yan_expansion/blob/main/PRIVACY.md" target="_blank" rel="noreferrer">PRIVACY.md</a>. Вопросы можно направлять через <a href="https://github.com/segikill/yan_expansion/issues" target="_blank" rel="noreferrer">Issues репозитория</a>.</p>
+      </section>
+    </div>
+
+    <footer>Дата вступления в силу: 21 августа 2026 года.</footer>
+  </main>
+</body>
+</html>
