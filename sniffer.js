@@ -20,11 +20,9 @@
     const u = String(url);
     if (!/2gis\./i.test(u)) return false;
     if (!/json/i.test(String(ctype || ""))) return false;
-    return (
-      /catalog\.api\.2gis\./i.test(u) ||
-      /\/3\.0\/(items|search|branches|rubrics)/i.test(u) ||
-      /[?&](q|query|text)=/i.test(u)
-    );
+    // Перехватываем только выдачу организаций и карточку по ID. Раньше
+    // любое JSON catalog.api попадало в кэш, включая рубрики и геообъекты.
+    return /catalog\.api\.2gis\.[^/]+\/[^?#]*\/items(?:\/byid)?(?:[/?#]|$)/i.test(u);
   }
 
   // ---- fetch ----

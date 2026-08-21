@@ -19,6 +19,14 @@
   const nowIso = () => new Date().toISOString();
   const sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
 
+  function validCoordinatePair(latValue, lonValue) {
+    const lat = Number(String(latValue ?? "").replace(",", "."));
+    const lon = Number(String(lonValue ?? "").replace(",", "."));
+    return Number.isFinite(lat) && Number.isFinite(lon) && Math.abs(lat) <= 90 && Math.abs(lon) <= 180
+      ? { lat: String(lat), lon: String(lon) }
+      : null;
+  }
+
   async function storageGet(key) {
     const data = await api.storage.local.get(key);
     return data?.[key];
@@ -26,6 +34,10 @@
 
   async function storageSet(key, value) {
     await api.storage.local.set({ [key]: value });
+  }
+
+  async function storageSetMany(values) {
+    await api.storage.local.set(values);
   }
 
   function emptyJob() {
@@ -37,6 +49,7 @@
       updated_at: nowIso(),
       started_at: "",
       completed_at: "",
+      source: "yandex",
       settings: { workers: 1, timeout_ms: 25000, max_attempts: 3, delay_ms: 1200 },
       tasks: {},
       workers: [],
@@ -96,26 +109,47 @@
   }
 
   function detailUrlForObject(object) {
-    if (!object || object.source !== "yandex" || !object.url) return "";
+    if (!object || !object.url) return "";
     try {
       const sourceUrl = new URL(object.url);
-      if (!/(^|\.)(yandex\.|ya\.ru$)/i.test(sourceUrl.hostname)) return "";
-      const orgId = String(object.org_id || orgIdFromYandexUrl(sourceUrl.toString()) || "");
-      if (!/^\d{5,}$/.test(orgId)) return "";
-      const detailUrl = new URL(`/maps/org/object/${orgId}/`, sourceUrl.origin);
-      return detailUrl.toString();
+      if (object.source === "yandex") {
+        if (!/(^|\.)(yandex\.|ya\.ru$)/i.test(sourceUrl.hostname)) return "";
+        const orgId = String(object.org_id || orgIdFromYandexUrl(sourceUrl.toString()) || "");
+        if (!/^\d{5,}$/.test(orgId)) return "";
+        return new URL(`/maps/org/object/${orgId}/`, sourceUrl.origin).toString();
+      }
+      if (object.source === "2gis") {
+        if (!/2gis\.(?:ru|com)$/i.test(sourceUrl.hostname)) return "";
+        const match = sourceUrl.pathname.match(/\/(firm|geo)\/(\d{10,})/i);
+        const orgId = String(object.org_id || match?.[2] || "").match(/^\d{10,}$/)?.[0] || "";
+        if (!orgId) return "";
+        const entityType = match?.[1]?.toLowerCase() === "geo" ? "geo" : "firm";
+        const first = sourceUrl.pathname.split("/").filter(Boolean)[0] || "";
+        const city = ["firm", "geo"].includes(first.toLowerCase()) ? "" : first;
+        sourceUrl.hash = "";
+        sourceUrl.search = "";
+        sourceUrl.pathname = `${city ? `/${city}` : ""}/${entityType}/${orgId}/tab/info`;
+        return sourceUrl.toString();
+      }
+      return "";
     } catch {
       return "";
     }
   }
 
   function publicState(job, resultCount, baseCount) {
-    return { job, result_count: resultCount, base_count: baseCount, controller_version: "1.10.0" };
+    return { job, result_count: resultCount, base_count: baseCount.total, base_counts: baseCount, controller_version: "1.12.3" };
   }
 
   async function getState() {
     const [job, results, session] = await Promise.all([loadJob(), loadResults(), storageGet(SESSION_KEY)]);
-    return publicState(job, Object.keys(results).length, Object.keys(session?.objects || {}).length);
+    const objects = Object.values(session?.objects || {});
+    const baseCount = {
+      total: objects.length,
+      yandex: objects.filter((object) => object?.source === "yandex" && detailUrlForObject(object)).length,
+      "2gis": objects.filter((object) => object?.source === "2gis" && detailUrlForObject(object)).length
+    };
+    return publicState(job, Object.keys(results).length, baseCount);
   }
 
   async function ensureWatchdog(active) {
@@ -126,6 +160,7 @@
   }
 
   async function startJob(options) {
+    const source = options?.source === "2gis" ? "2gis" : "yandex";
     const scope = ["unprocessed", "all", "errors"].includes(options?.scope) ? options.scope : "unprocessed";
     const workersCount = Math.min(4, Math.max(1, Number(options?.workers) || 1));
     const timeoutMs = Math.min(90000, Math.max(10000, Number(options?.timeout_ms) || 25000));
@@ -140,6 +175,7 @@
 
       const tasks = {};
       for (const [objectKey, object] of Object.entries(session?.objects || {})) {
+        if (object?.source !== source) continue;
         const detailUrl = detailUrlForObject(object);
         if (!detailUrl) continue;
         const existing = results[objectKey];
@@ -150,7 +186,7 @@
         if (!include) continue;
         tasks[objectKey] = {
           object_key: objectKey,
-          source: "yandex",
+          source,
           org_id: String(object.org_id || orgIdFromYandexUrl(object.url) || ""),
           title: String(object.title || ""),
           url: detailUrl,
@@ -172,6 +208,7 @@
       job.status = "running";
       job.created_at = timestamp;
       job.started_at = timestamp;
+      job.source = source;
       job.settings = { workers: workersCount, timeout_ms: timeoutMs, max_attempts: maxAttempts, delay_ms: delayMs };
       job.tasks = tasks;
       job.workers = Array.from({ length: workersCount }, (_, index) => ({
@@ -188,7 +225,7 @@
 
     await ensureWatchdog(true);
     await pump();
-    return { ok: true, state: publicState(state, 0, Object.keys(state.tasks).length) };
+    return { ok: true, state: publicState(state, 0, { total: Object.keys(state.tasks).length, yandex: source === "yandex" ? Object.keys(state.tasks).length : 0, "2gis": source === "2gis" ? Object.keys(state.tasks).length : 0 }) };
   }
 
   async function tabExists(tabId) {
@@ -316,6 +353,7 @@
         worker_id: worker.worker_id,
         object_key: task.object_key,
         org_id: task.org_id,
+        source: task.source || job.source || "yandex",
         attempt: task.attempts,
         timeout_ms: job.settings.timeout_ms
       };
@@ -345,7 +383,7 @@
 
   async function finishSuccess(objectKey, result) {
     await serial(async () => {
-      const [job, results] = await Promise.all([loadJob(), loadResults()]);
+      const [job, results, session] = await Promise.all([loadJob(), loadResults(), storageGet(SESSION_KEY)]);
       const task = job.tasks[objectKey];
       if (!task || task.status === "success") return;
       results[objectKey] = {
@@ -355,7 +393,16 @@
         attempts: task.attempts,
         source_url: task.url
       };
-      await storageSet(RESULTS_KEY, results);
+      const storagePatch = { [RESULTS_KEY]: results };
+      const coordinates = validCoordinatePair(result?.lat, result?.lon);
+      const baseObject = session?.objects?.[objectKey];
+      if (coordinates && baseObject) {
+        baseObject.lat = coordinates.lat;
+        baseObject.lon = coordinates.lon;
+        session.updated_at = nowIso();
+        storagePatch[SESSION_KEY] = session;
+      }
+      await storageSetMany(storagePatch);
       task.status = "success";
       task.completed_at = nowIso();
       task.error = "";
@@ -515,6 +562,25 @@
     return { ok: true };
   }
 
+  async function forceResetEnrichment() {
+    const tabIds = await serial(async () => {
+      const job = await loadJob();
+      const ids = job.workers.map((worker) => worker.tab_id).filter(Number.isInteger);
+      const freshJob = emptyJob();
+      await storageSetMany({
+        [JOB_KEY]: freshJob,
+        [RESULTS_KEY]: {}
+      });
+      return ids;
+    });
+
+    if (tabIds.length) {
+      try { await api.tabs.remove(tabIds); } catch {}
+    }
+    await ensureWatchdog(false);
+    return { ok: true, ...(await getState()) };
+  }
+
   async function retryErrors() {
     await serial(async () => {
       const job = await loadJob();
@@ -539,13 +605,32 @@
     return { ok: true };
   }
 
-  async function openDashboard() {
+  async function openDashboard(sourceTab = null) {
+    let source = sourceTab;
+    if (source?.id && (!Number.isInteger(source.index) || !Number.isInteger(source.windowId))) {
+      try { source = await api.tabs.get(source.id); } catch { source = null; }
+    }
+    const hasSourcePosition = Number.isInteger(source?.index) && Number.isInteger(source?.windowId);
     const existing = await api.tabs.query({ url: DASHBOARD_URL });
     if (existing?.[0]?.id) {
-      await api.tabs.update(existing[0].id, { active: true });
-      return { ok: true, tab_id: existing[0].id };
+      const dashboard = existing.find((tab) => tab.windowId === source?.windowId) || existing[0];
+      if (hasSourcePosition && typeof api.tabs.move === "function") {
+        const movesInsideSameWindow = dashboard.windowId === source.windowId;
+        const wasBeforeSource = movesInsideSameWindow && Number.isInteger(dashboard.index) && dashboard.index < source.index;
+        const targetIndex = source.index + (wasBeforeSource ? 0 : 1);
+        try {
+          await api.tabs.move(dashboard.id, { windowId: source.windowId, index: targetIndex });
+        } catch {}
+      }
+      await api.tabs.update(dashboard.id, { active: true });
+      return { ok: true, tab_id: dashboard.id };
     }
-    const tab = await api.tabs.create({ url: DASHBOARD_URL, active: true });
+    const createProperties = { url: DASHBOARD_URL, active: true };
+    if (hasSourcePosition) {
+      createProperties.windowId = source.windowId;
+      createProperties.index = source.index + 1;
+    }
+    const tab = await api.tabs.create(createProperties);
     return { ok: true, tab_id: tab.id };
   }
 
@@ -565,8 +650,15 @@
       case "ENRICHMENT_PAUSE": return pauseJob();
       case "ENRICHMENT_RESUME": return resumeJob();
       case "ENRICHMENT_STOP": return stopJob();
+      case "ENRICHMENT_FORCE_RESET": return forceResetEnrichment();
       case "ENRICHMENT_RETRY_ERRORS": return retryErrors();
-      case "OPEN_ENRICHMENT": return openDashboard();
+      case "OPEN_ENRICHMENT": {
+        let sourceTab = sender?.tab || null;
+        if (!sourceTab?.id && Number.isInteger(message.source_tab_id)) {
+          try { sourceTab = await api.tabs.get(message.source_tab_id); } catch { sourceTab = null; }
+        }
+        return openDashboard(sourceTab);
+      }
       case "ENRICHMENT_OPEN_WORKER": return openWorker(message.worker_id);
       case "ENRICHMENT_WORKER_READY":
         if (sender?.tab?.id) await dispatchForTab(sender.tab.id, true);

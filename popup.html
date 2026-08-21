@@ -2,61 +2,166 @@
 <html lang="ru">
 <head>
   <meta charset="utf-8" />
-  <title>Maps Export Overlay</title>
+  <meta name="viewport" content="width=device-width,initial-scale=1" />
+  <meta name="theme-color" content="#07111f" />
+  <title>Maps Export</title>
   <style>
+    :root {
+      color-scheme: dark;
+      --bg: #06101d;
+      --surface-soft: rgba(255, 255, 255, .035);
+      --line: rgba(138, 165, 197, .16);
+      --text: #edf5ff;
+      --muted: #8799b2;
+      --cyan: #37d6ff;
+      --blue: #4d7fff;
+      --red: #ff7188;
+    }
     * { box-sizing: border-box; }
     body {
-      width: 360px;
+      width: 388px;
       margin: 0;
-      padding: 14px;
-      color: #101828;
-      background: #fff;
-      font: 13px/1.35 system-ui, -apple-system, Segoe UI, Roboto, Arial, sans-serif;
+      padding: 16px;
+      overflow: hidden;
+      color: var(--text);
+      background:
+        radial-gradient(circle at 12% -15%, rgba(55, 214, 255, .16), transparent 230px),
+        radial-gradient(circle at 105% 22%, rgba(138, 108, 255, .13), transparent 250px),
+        linear-gradient(160deg, #081624, var(--bg) 60%, #050b14);
+      font: 13px/1.4 Inter, system-ui, -apple-system, "Segoe UI", Arial, sans-serif;
     }
-    .head { display:flex; align-items:center; justify-content:space-between; margin-bottom: 12px; }
-    .title { font-weight: 800; letter-spacing: -.02em; }
-    .source { color: #667085; font-size: 12px; }
-    .stats { display:grid; grid-template-columns: repeat(4, 1fr); gap: 7px; margin-bottom: 10px; }
-    .card { border:1px solid #EAECF0; background:#F9FAFB; border-radius: 14px; padding: 9px 8px; }
-    .card b { display:block; font-size: 20px; line-height: 1; letter-spacing: -.04em; }
-    .card span { display:block; margin-top: 5px; color:#667085; font-size: 11px; }
-    .actions { display:grid; gap:7px; }
-    button { height:36px; border:0; border-radius:12px; cursor:pointer; font:800 12px/1 system-ui, -apple-system, Segoe UI, Arial, sans-serif; text-transform: uppercase; }
-    button.primary { background:#175CD3; color:white; }
-    button.primary:hover { background:#1849A9; }
-    button.secondary { background:#F2F4F7; color:#344054; }
-    button.secondary:hover { background:#E4E7EC; }
-    button.danger { background:#FFF1F3; color:#C01048; }
-    button:disabled { opacity:.55; cursor:default; }
-    .row { display:grid; grid-template-columns:1fr 1fr; gap:7px; }
-    .status { min-height: 18px; margin-top: 10px; color:#667085; font-size: 12px; }
+    body::before {
+      content: "";
+      position: fixed;
+      inset: 0;
+      pointer-events: none;
+      opacity: .35;
+      background-image:
+        linear-gradient(rgba(120, 160, 200, .04) 1px, transparent 1px),
+        linear-gradient(90deg, rgba(120, 160, 200, .04) 1px, transparent 1px);
+      background-size: 28px 28px;
+      mask-image: linear-gradient(180deg, #000, transparent 88%);
+    }
+    .shell { position: relative; z-index: 1; }
+    .head { display: flex; align-items: center; justify-content: space-between; gap: 14px; margin-bottom: 14px; }
+    .brand { display: flex; align-items: center; gap: 11px; min-width: 0; }
+    .brand-mark {
+      display: grid;
+      grid-template-columns: repeat(3, 4px);
+      align-items: end;
+      gap: 3px;
+      width: 32px;
+      height: 36px;
+      padding: 8px 7px;
+      border: 1px solid rgba(55, 214, 255, .22);
+      border-radius: 10px;
+      background: linear-gradient(180deg, rgba(55, 214, 255, .10), rgba(77, 127, 255, .04));
+      box-shadow: 0 0 24px rgba(55, 214, 255, .08), inset 0 1px rgba(255, 255, 255, .05);
+    }
+    .brand-mark i { display: block; width: 4px; border-radius: 999px 999px 2px 2px; background: linear-gradient(var(--cyan), var(--blue)); }
+    .brand-mark i:nth-child(1) { height: 10px; opacity: .72; }
+    .brand-mark i:nth-child(2) { height: 18px; }
+    .brand-mark i:nth-child(3) { height: 13px; opacity: .82; }
+    .eyebrow { color: #9deeff; font-size: 9px; font-weight: 800; letter-spacing: .13em; text-transform: uppercase; }
+    .title { margin-top: 2px; font-size: 17px; font-weight: 780; letter-spacing: -.025em; }
+    .version { margin-left: 5px; color: #71849d; font-size: 9px; font-weight: 700; vertical-align: 2px; }
+    .source-badge {
+      display: inline-flex;
+      align-items: center;
+      gap: 7px;
+      min-height: 31px;
+      padding: 0 10px;
+      border: 1px solid var(--line);
+      border-radius: 999px;
+      color: #b9c8da;
+      background: rgba(8, 19, 33, .68);
+      font-size: 10px;
+      font-weight: 750;
+      white-space: nowrap;
+    }
+    .source-badge::before { content: ""; width: 7px; height: 7px; border-radius: 50%; background: var(--cyan); box-shadow: 0 0 0 4px rgba(55, 214, 255, .08), 0 0 12px rgba(55, 214, 255, .35); }
+    .source-badge[data-source="unknown"]::before { background: #607188; box-shadow: 0 0 0 4px rgba(96, 113, 136, .09); }
+    .stats { display: grid; grid-template-columns: repeat(4, 1fr); gap: 7px; margin-bottom: 10px; }
+    .card {
+      min-width: 0;
+      padding: 10px 8px 9px;
+      border: 1px solid var(--line);
+      border-radius: 13px;
+      background: linear-gradient(180deg, rgba(18, 36, 59, .75), rgba(8, 20, 34, .75));
+      box-shadow: inset 0 1px rgba(255, 255, 255, .025);
+    }
+    .card b { display: block; overflow: hidden; color: #f6fbff; font-size: 20px; line-height: 1; font-variant-numeric: tabular-nums; letter-spacing: -.045em; text-overflow: ellipsis; }
+    .card span { display: block; margin-top: 6px; overflow: hidden; color: var(--muted); font-size: 9px; font-weight: 650; text-overflow: ellipsis; white-space: nowrap; }
+    .actions { display: grid; gap: 7px; }
+    button {
+      min-height: 38px;
+      padding: 0 13px;
+      border: 1px solid transparent;
+      border-radius: 11px;
+      cursor: pointer;
+      color: #dce7f5;
+      background: #13243a;
+      font: 730 11px/1.2 Inter, system-ui, -apple-system, "Segoe UI", Arial, sans-serif;
+      transition: transform .13s ease, background .13s ease, border-color .13s ease, box-shadow .13s ease, opacity .13s ease;
+    }
+    button:hover { transform: translateY(-1px); background: #192d47; }
+    button:active { transform: none; }
+    button:focus-visible { outline: 2px solid var(--cyan); outline-offset: 2px; }
+    button:disabled { cursor: wait; opacity: .45; transform: none; }
+    button.primary { min-height: 43px; color: #03131a; background: linear-gradient(135deg, #65e9ff, #36d2ff 58%, #59a9ff); box-shadow: 0 9px 24px rgba(55, 214, 255, .16), inset 0 1px rgba(255, 255, 255, .28); }
+    button.primary:hover { background: linear-gradient(135deg, #82efff, #4edaff 58%, #70b7ff); box-shadow: 0 11px 28px rgba(55, 214, 255, .22); }
+    button.secondary { border-color: var(--line); background: var(--surface-soft); }
+    button.danger { color: #ffc2cc; border-color: rgba(255, 113, 136, .22); background: rgba(255, 113, 136, .08); }
+    button.ghost { min-height: 30px; color: #8295ad; background: transparent; font-size: 10px; }
+    button.ghost:hover { color: #c5d3e4; background: rgba(255, 255, 255, .035); }
+    .row { display: grid; grid-template-columns: 1fr 1fr; gap: 7px; }
+    .status {
+      display: flex;
+      align-items: center;
+      min-height: 35px;
+      margin-top: 9px;
+      padding: 8px 10px;
+      border: 1px solid rgba(138, 165, 197, .09);
+      border-radius: 10px;
+      color: #8295ad;
+      background: rgba(4, 12, 22, .34);
+      font-size: 10px;
+    }
+    @media (prefers-reduced-motion: reduce) { *, *::before, *::after { transition: none !important; } }
   </style>
 </head>
 <body>
-  <div class="head">
-    <div>
-      <div class="title">Maps Export</div>
-      <div class="source" id="source">overlay</div>
-    </div>
-  </div>
+  <main class="shell">
+    <header class="head">
+      <div class="brand">
+        <span class="brand-mark" aria-hidden="true"><i></i><i></i><i></i></span>
+        <div>
+          <div class="eyebrow">Сбор данных с карт</div>
+          <div class="title">Maps Export <span class="version">1.12.3</span></div>
+        </div>
+      </div>
+      <div class="source-badge" id="source" title="Текущая вкладка">карта не открыта</div>
+    </header>
 
-  <div class="stats">
-    <div class="card"><b id="currentCount">0</b><span>сейчас</span></div>
-    <div class="card"><b id="sessionCount">0</b><span>всего</span></div>
-    <div class="card"><b id="snapshotCount">0</b><span>фиксаций</span></div>
-    <div class="card"><b id="detailCount">0</b><span>деталей</span></div>
-  </div>
+    <section class="stats" aria-label="Статистика текущей сессии">
+      <div class="card"><b id="currentCount">0</b><span>на экране</span></div>
+      <div class="card"><b id="sessionCount">0</b><span>в сессии</span></div>
+      <div class="card"><b id="snapshotCount">0</b><span>фиксаций</span></div>
+      <div class="card"><b id="detailCount">0</b><span>с деталями</span></div>
+    </section>
 
-  <div class="actions">
-    <button id="btnShowPanel" class="primary">Показать панель</button>
-    <button id="btnEnrichment" class="secondary">Дособрать данные по URL</button>
-    <div class="row">
-      <button id="btnExport" class="secondary">XLSX</button>
-      <button id="btnClear" class="danger">Сброс</button>
-    </div>
-  </div>
+    <section class="actions" aria-label="Действия">
+      <button type="button" id="btnShowPanel" class="primary">Открыть панель на карте</button>
+      <button type="button" id="btnEnrichment" class="secondary">Досбор деталей по URL</button>
+      <div class="row">
+        <button type="button" id="btnExport" class="secondary">Скачать XLSX</button>
+        <button type="button" id="btnClear" class="danger">Сбросить сессию</button>
+      </div>
+      <button type="button" id="btnInstructions" class="ghost">Как пользоваться</button>
+    </section>
 
-  <div id="status" class="status"></div>
+    <div id="status" class="status" role="status" aria-live="polite">Результаты сохраняются локально в браузере.</div>
+  </main>
 
   <script src="xlsx.full.min.js"></script>
   <script src="popup.js"></script>

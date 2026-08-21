@@ -105,9 +105,9 @@ context.globalThis = context;
 const backgroundPath = path.join(__dirname, "..", "background.js");
 vm.runInContext(fs.readFileSync(backgroundPath, "utf8"), context, { filename: backgroundPath });
 
-function message(message) {
+function message(message, sender = {}) {
   return new Promise((resolve) => {
-    const keepChannel = runtimeMessageHandler(message, {}, resolve);
+    const keepChannel = runtimeMessageHandler(message, sender, resolve);
     assert.equal(keepChannel, true);
   });
 }
@@ -165,7 +165,78 @@ function message(message) {
   assert.equal(storage[JOB_KEY].status, "blocked");
   assert.equal(storage[JOB_KEY].totals.rate_limited, 1);
   assert.equal(storage[RESULTS_KEY]["yandex:9876543210"].status, "rate_limited");
-  console.log("PASS background controller: success and rate-limit stop paths");
+
+  const blockedReset = await message({ type: "ENRICHMENT_FORCE_RESET" });
+  assert.equal(blockedReset.ok, true);
+  assert.equal(storage[JOB_KEY].status, "idle");
+  assert.equal(Object.keys(storage[JOB_KEY].tasks).length, 0);
+  assert.equal(Object.keys(storage[RESULTS_KEY]).length, 0);
+  assert.equal(tabs.has(limitedTabId), false);
+
+  const restarted = await message({
+    type: "ENRICHMENT_START",
+    options: { scope: "unprocessed", workers: 1, timeout_ms: 10000, max_attempts: 2, delay_ms: 300 }
+  });
+  assert.equal(restarted.ok, true);
+  assert.equal(storage[JOB_KEY].totals.total, 1);
+  const restartedTabId = storage[JOB_KEY].workers[0].tab_id;
+  assert.equal(tabs.has(restartedTabId), true);
+
+  const runningReset = await message({ type: "ENRICHMENT_FORCE_RESET" });
+  assert.equal(runningReset.ok, true);
+  assert.equal(storage[JOB_KEY].status, "idle");
+  assert.equal(Object.keys(storage[RESULTS_KEY]).length, 0);
+  assert.equal(tabs.has(restartedTabId), false);
+
+  storage[SESSION_KEY].objects = {
+    "2gis:70000001090062896": {
+      object_key: "2gis:70000001090062896",
+      source: "2gis",
+      org_id: "70000001090062896",
+      title: "Дружба",
+      url: "https://2gis.ru/blagoveshensk/firm/70000001090062896"
+    }
+  };
+  workerResponse = {
+    ok: true,
+    status: "success",
+    result: {
+      source: "2gis",
+      org_id: "70000001090062896",
+      title: "Дружба",
+      lat: "50.258103",
+      lon: "127.524379",
+      enriched_at: new Date().toISOString()
+    }
+  };
+  const gisStart = await message({
+    type: "ENRICHMENT_START",
+    options: { source: "2gis", scope: "all", workers: 1, timeout_ms: 10000, max_attempts: 2, delay_ms: 300 }
+  });
+  assert.equal(gisStart.ok, true);
+  assert.equal(storage[JOB_KEY].source, "2gis");
+  const gisTabId = storage[JOB_KEY].workers[0].tab_id;
+  assert.equal(tabs.get(gisTabId).url, "https://2gis.ru/blagoveshensk/firm/70000001090062896/tab/info");
+  tabsUpdatedHandler(gisTabId, { status: "complete" });
+  const gisDeadline = Date.now() + 2000;
+  while (storage[JOB_KEY].status !== "completed" && Date.now() < gisDeadline) {
+    await new Promise((resolve) => setTimeout(resolve, 20));
+  }
+  assert.equal(storage[JOB_KEY].totals.success, 1);
+  assert.equal(storage[SESSION_KEY].objects["2gis:70000001090062896"].lat, "50.258103");
+  assert.equal(storage[SESSION_KEY].objects["2gis:70000001090062896"].lon, "127.524379");
+
+  const dashboardOpen = await message(
+    { type: "OPEN_ENRICHMENT" },
+    { tab: { id: 777, index: 3, windowId: 9 } }
+  );
+  assert.equal(dashboardOpen.ok, true);
+  const dashboardTab = tabs.get(dashboardOpen.tab_id);
+  assert.equal(dashboardTab.url, "chrome-extension://test/enrichment.html");
+  assert.equal(dashboardTab.active, true);
+  assert.equal(dashboardTab.windowId, 9);
+  assert.equal(dashboardTab.index, 4);
+  console.log("PASS background controller: Yandex, 2GIS, force-reset and adjacent dashboard paths");
 })().catch((error) => {
   console.error(error);
   process.exitCode = 1;

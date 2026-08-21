@@ -1,0 +1,123 @@
+<!doctype html>
+<html lang="ru">
+<head>
+  <meta charset="utf-8" />
+  <title>Тест коллектора 2ГИС</title>
+</head>
+<body>
+  <div class="_5ocwns">
+    <div id="testPreviousPage" class="_n5hmn94"><svg style="transform:rotate(90deg)"></svg></div>
+    <div id="testNextPage" class="_n5hmn94"><svg style="transform:rotate(-90deg)" aria-label="Следующая страница"></svg></div>
+  </div>
+  <script>
+    globalThis.chrome = {
+      runtime: {
+        getURL() { return "data:text/javascript,"; },
+        onMessage: { addListener() {} }
+      }
+    };
+  </script>
+  <script src="../content.js"></script>
+  <script>
+    (async () => {
+      const api = globalThis.__MAPS_EXPORT_2GIS_TEST__;
+      const rich = {
+        id: "70000001052264802_trackingSuffix",
+        type: "branch",
+        name: "Отель Север",
+        address_name: "ул. Примерная, 1",
+        point: { lat: 50.25, lon: 127.5 },
+        rubrics: [{ name: "Гостиница" }, { name: "Отель" }],
+        reviews: { general_rating: 4.8, general_review_count: 123 }
+      };
+      const row = api.normalizeItem(rich, "https://catalog.api.2gis.com/3.0/items/byid");
+      const canonical = api.cleanOrgUrl(
+        "https://2gis.ru/blagoveshensk/firm/70000001052264802_tracking?stat=technical#fragment"
+      );
+      const merged = api.mergeRows(row, {
+        org_id: row.org_id,
+        title: row.title,
+        rating: "",
+        reviews: "",
+        categories_all: "",
+        address: "",
+        lat: "",
+        lon: "",
+        url: ""
+      }, "search");
+      const stat = btoa(JSON.stringify({ placeItem: { geoPosition: { lon: 127.517003, lat: 50.259225 } } }));
+      const statCoordinates = api.coordinatesFromUrl(
+        `https://2gis.ru/blagoveshensk/firm/70000001089771371?stat=${encodeURIComponent(stat)}`
+      );
+      const geometryCoordinates = api.extractCoordinates({ geometry: { selection: "POINT(127.536541 50.256789)" } });
+      const warmLink = document.createElement("a");
+      warmLink.href = "https://2gis.ru/blagoveshensk/firm/70000001052264804?stat=test";
+      warmLink.textContent = "Быстрая карточка";
+      const warmCard = document.createElement("article");
+      warmCard.className = "result-card";
+      warmCard.appendChild(warmLink);
+      for (const line of ["Гостиница", "4.9", "Подтверждён", "(125)", "Площадь Ленина, 1, Благовещенск", "Гостиницы · 3 звезды · Завтрак"]) {
+        const item = document.createElement("div");
+        item.textContent = line;
+        warmCard.appendChild(item);
+      }
+      let firmClicks = 0;
+      let cardWarmEvents = 0;
+      warmLink.addEventListener("click", (event) => { event.preventDefault(); firmClicks += 1; });
+      warmCard.addEventListener("mouseover", () => { cardWarmEvents += 1; });
+      document.body.appendChild(warmCard);
+      const startedAt = performance.now();
+      await api.warmAnchor(warmLink);
+      const warmElapsed = performance.now() - startedAt;
+      const domCard = api.parseDomCard(warmLink);
+      const searchOverDom = api.mergeRows({
+        org_id: warmLink.href.match(/firm\/(\d+)/)[1],
+        title: "Быстрая карточка, гостиница",
+        categories_all: "Гостиница",
+        address: "Площадь Ленина, 1, Благовещенск"
+      }, {
+        org_id: warmLink.href.match(/firm\/(\d+)/)[1],
+        title: "Быстрая карточка, гостиница",
+        categories_all: "Гостиницы | Отели",
+        address: "Площадь Ленина, 1"
+      }, "search");
+      const delayedId = "70000001052264805";
+      setTimeout(() => api.storeItem({
+        id: delayedId,
+        type: "branch",
+        name: "Отложенная карточка",
+        address_name: "ул. Сетевая, 2",
+        point: { lat: 50.26, lon: 127.54 },
+        rubrics: [{ name: "Гостиница" }],
+        reviews: { general_rating: 4.7, general_review_count: 42 }
+      }, "https://catalog.api.2gis.com/3.0/items"), 60);
+      const settleResult = await api.settlePageData([delayedId], 500);
+      const checks = {
+        long_branch_is_valid: api.isOrganizationItem(rich) === true,
+        short_rubric_is_rejected: api.isOrganizationItem({ id: "113458", type: "rubric", name: "Точки Wi-Fi" }) === false,
+        explicit_ad_is_rejected: api.isOrganizationItem({ id: "70000001052264803", type: "branch", name: "Реклама", is_ad: true }) === false,
+        compound_id_normalized: row.org_id === "70000001052264802",
+        reviews_count_parsed: row.reviews === "123",
+        rating_parsed: row.rating === "4,8",
+        rich_fields_parsed: row.categories_all === "Гостиница | Отель" && row.address === "ул. Примерная, 1" && row.lat === "50.25" && row.lon === "127.5",
+        coordinates_are_restored_from_stat: statCoordinates.lat === "50.259225" && statCoordinates.lon === "127.517003",
+        coordinates_are_restored_from_geometry: geometryCoordinates.lat === "50.256789" && geometryCoordinates.lon === "127.536541",
+        url_is_canonical: canonical.org_id === "70000001052264802" && canonical.url.endsWith("/blagoveshensk/firm/70000001052264802") && !canonical.url.includes("stat=") && !canonical.url.includes("_tracking"),
+        empty_search_does_not_erase_detail: merged.reviews === "123" && merged.categories_all === "Гостиница | Отель" && merged.address === "ул. Примерная, 1",
+        fast_warm_does_not_open_firm: firmClicks === 0 && warmElapsed < 250,
+        card_container_receives_warm_events: cardWarmEvents > 0,
+        visible_card_fields_are_parsed: domCard.rating === "4,9" && domCard.reviews === "125" && domCard.categories_all === "Гостиницы" && domCard.address === "Площадь Ленина, 1" && domCard.title === "Быстрая карточка, гостиница",
+        network_search_replaces_dom_fallback: searchOverDom.categories_all === "Гостиницы | Отели" && searchOverDom.address === "Площадь Ленина, 1",
+        delayed_page_payload_is_awaited: settleResult.ready === 1 && settleResult.pending === 0,
+        forward_arrow_is_used_instead_of_first_arrow: api.findNextPageControl() === document.getElementById("testNextPage")
+      };
+      const passed = Object.values(checks).every(Boolean);
+      document.documentElement.dataset.testResult = passed ? "PASS" : "FAIL";
+      const output = document.createElement("pre");
+      output.id = "test-output";
+      output.textContent = JSON.stringify({ passed, checks, row, canonical, merged }, null, 2);
+      document.body.appendChild(output);
+    })();
+  </script>
+</body>
+</html>

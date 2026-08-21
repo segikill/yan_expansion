@@ -18,6 +18,12 @@ function normalize2gisOrgId(rawId) {
   return m ? m[1] : "";
 }
 
+function isValid2gisOrgId(orgId) {
+  // ID рубрик и служебных сущностей 2ГИС обычно короткие (например 305, 110532).
+  // ID филиалов в актуальном каталоге — длинные числовые значения.
+  return /^\d{10,}$/.test(String(orgId || ""));
+}
+
 // 2GIS: город/префикс из URL (обычно /<city>/search или /<city>/firm)
 function get2gisCityPrefix() {
   const parts = String(location.pathname || "/").split("/").filter(Boolean);
@@ -39,11 +45,104 @@ function normalize2gisUrl(raw) {
 }
 
 function build2gisFirmUrl(rawFirmId) {
-  const raw = String(rawFirmId || "").trim();
-  if (!raw) return "";
+  const raw = normalize2gisOrgId(rawFirmId);
+  if (!isValid2gisOrgId(raw)) return "";
   const city = get2gisCityPrefix();
   const base = String(location.origin || "https://2gis.ru");
   return city ? `${base}/${city}/firm/${raw}` : `${base}/firm/${raw}`;
+}
+
+function normalize2gisCoordinatePair(latValue, lonValue) {
+  const lat = Number(String(latValue ?? "").replace(",", "."));
+  const lon = Number(String(lonValue ?? "").replace(",", "."));
+  if (!Number.isFinite(lat) || !Number.isFinite(lon) || Math.abs(lat) > 90 || Math.abs(lon) > 180) {
+    return { lat: "", lon: "" };
+  }
+  return { lat: String(lat), lon: String(lon) };
+}
+
+function coordinatesFrom2gisCandidate(candidate) {
+  if (!candidate) return { lat: "", lon: "" };
+  if (Array.isArray(candidate) && candidate.length >= 2) {
+    return normalize2gisCoordinatePair(candidate[1], candidate[0]);
+  }
+  if (typeof candidate === "string") {
+    const point = candidate.match(/POINT\s*\(\s*(-?\d+(?:[.,]\d+)?)\s+(-?\d+(?:[.,]\d+)?)\s*\)/i);
+    if (point) return normalize2gisCoordinatePair(point[2], point[1]);
+    return { lat: "", lon: "" };
+  }
+  if (typeof candidate !== "object") return { lat: "", lon: "" };
+  const direct = normalize2gisCoordinatePair(
+    candidate.lat ?? candidate.latitude,
+    candidate.lon ?? candidate.lng ?? candidate.longitude
+  );
+  if (direct.lat && direct.lon) return direct;
+  if (Array.isArray(candidate.coordinates)) return coordinatesFrom2gisCandidate(candidate.coordinates);
+  return { lat: "", lon: "" };
+}
+
+function decode2gisStat(rawStat) {
+  if (!rawStat || typeof atob !== "function") return null;
+  try {
+    const normalized = String(rawStat).replace(/\s/g, "+").replace(/-/g, "+").replace(/_/g, "/");
+    const padded = normalized.padEnd(Math.ceil(normalized.length / 4) * 4, "=");
+    const binary = atob(padded);
+    const bytes = Uint8Array.from(binary, (char) => char.charCodeAt(0));
+    const json = typeof TextDecoder === "function" ? new TextDecoder().decode(bytes) : binary;
+    return JSON.parse(json);
+  } catch {
+    return null;
+  }
+}
+
+function coordinatesFrom2gisUrl(rawUrl) {
+  try {
+    const url = new URL(rawUrl, location.origin);
+    const stat = decode2gisStat(url.searchParams.get("stat"));
+    const statCandidates = [
+      stat?.placeItem?.geoPosition,
+      stat?.placeItem?.geo_position,
+      stat?.geoPosition,
+      stat?.geo_position
+    ];
+    for (const candidate of statCandidates) {
+      const pair = coordinatesFrom2gisCandidate(candidate);
+      if (pair.lat && pair.lon) return pair;
+    }
+
+    const path = decodeURIComponent(url.pathname);
+    const route = path.match(/\/(?:firm|geo)\/[^/]+\/(-?\d+(?:[.,]\d+)?),(-?\d+(?:[.,]\d+)?)/i);
+    if (route) {
+      const pair = normalize2gisCoordinatePair(route[2], route[1]);
+      if (pair.lat && pair.lon) return pair;
+    }
+
+    const mapState = String(url.searchParams.get("m") || "").match(/(-?\d+(?:[.,]\d+)?),(-?\d+(?:[.,]\d+)?)/);
+    if (mapState && /\/(?:firm|geo)\//i.test(path)) {
+      return normalize2gisCoordinatePair(mapState[2], mapState[1]);
+    }
+  } catch {}
+  return { lat: "", lon: "" };
+}
+
+function extract2gisCoordinates(item, urlHint = "") {
+  const candidates = [
+    item?.point,
+    item?.geoPosition,
+    item?.geo_position,
+    item?.location,
+    item?.coords,
+    item?.coord,
+    item?.geometry?.centroid,
+    item?.geometry?.point,
+    item?.geometry?.selection,
+    item?.geometry
+  ];
+  for (const candidate of candidates) {
+    const pair = coordinatesFrom2gisCandidate(candidate);
+    if (pair.lat && pair.lon) return pair;
+  }
+  return coordinatesFrom2gisUrl(urlHint);
 }
 
 function cleanOrgUrl(href) {
@@ -76,7 +175,16 @@ function clean2gisOrgUrl(href) {
     const raw = m ? m[1] : "";
     const org_id = normalize2gisOrgId(raw);
 
+    if (!isValid2gisOrgId(org_id)) return { url: "", org_id: "" };
+
+    // Убираем stat, рекламную атрибуцию и составной хвост ID. Для одной
+    // организации всегда получается одна стабильная ссылка.
+    const city = u.pathname.split("/").filter(Boolean)[0];
     u.hash = "";
+    u.search = "";
+    u.pathname = city && city !== "firm"
+      ? `/${city}/firm/${org_id}`
+      : `/firm/${org_id}`;
     return { url: u.toString(), org_id };
   } catch {
     return { url: "", org_id: "" };
@@ -215,6 +323,21 @@ function parseCoords(card) {
 // ===== caches =====
 const NET_CACHE = new Map();  // Yandex: org_id -> { rating, reviews, address }
 const GIS2_CACHE = new Map(); // 2GIS: numeric org_id -> Row
+const GIS2_META = new Map();  // 2GIS: provenance/quality, not exported
+let GIS2_CONTEXT_KEY = "";
+const GIS2_SCAN = {
+  running: false,
+  stopRequested: false,
+  page: 0,
+  pagesDone: 0,
+  discovered: 0,
+  warmed: 0,
+  failed: 0,
+  nextControl: "",
+  message: "Готово",
+  startedAt: "",
+  finishedAt: ""
+};
 
 function extractFromOrgHtml(html) {
   const doc = new DOMParser().parseFromString(html, "text/html");
@@ -259,6 +382,133 @@ function pick2gisCategories(item) {
   return Array.from(new Set(out)).join(" | ");
 }
 
+function firstNonEmpty(...values) {
+  for (const value of values) {
+    if (value == null) continue;
+    if (typeof value === "object") continue;
+    const text = String(value).replace(/\s+/g, " ").trim();
+    if (text && text !== "[object Object]") return text;
+  }
+  return "";
+}
+
+function get2gisContextKey() {
+  try {
+    const u = new URL(location.href);
+    const routePath = /\/search\//i.test(u.pathname)
+      ? u.pathname.replace(/\/firm\/.*$/i, "")
+      : u.pathname;
+    const path = routePath
+      .replace(/\/page\/\d+/gi, "")
+      .replace(/\/filters\/sort=[^/?#]+/gi, "")
+      .replace(/\/+$/, "");
+    const query = new URLSearchParams(u.search);
+    for (const key of ["m", "stat", "center", "zoom"]) query.delete(key);
+    query.sort();
+    return `${u.origin}${path}?${query.toString()}`;
+  } catch {
+    return String(location.pathname || "");
+  }
+}
+
+function reset2gisCache(reason = "") {
+  GIS2_CACHE.clear();
+  GIS2_META.clear();
+  GIS2_CONTEXT_KEY = get2gisContextKey();
+  GIS2_SCAN.discovered = 0;
+  GIS2_SCAN.warmed = 0;
+  GIS2_SCAN.failed = 0;
+  if (reason) GIS2_SCAN.message = reason;
+  emit2gisScanState();
+}
+
+function ensure2gisContext() {
+  const next = get2gisContextKey();
+  if (!GIS2_CONTEXT_KEY) {
+    GIS2_CONTEXT_KEY = next;
+    return;
+  }
+  if (!GIS2_SCAN.running && next !== GIS2_CONTEXT_KEY) reset2gisCache("Новый запрос 2ГИС");
+}
+
+function is2gisAdOrTechnicalItem(item) {
+  const type = String(item?.type || item?.entity_type || item?.result_type || "").toLowerCase();
+  if (/^(rubric|category|region|district|street|building|route|geo|advertisement|banner|promo)$/.test(type)) {
+    return true;
+  }
+  if (item?.is_ad === true || item?.is_advertisement === true || item?.is_promo === true || item?.is_sponsored === true) {
+    return true;
+  }
+  return false;
+}
+
+function is2gisOrganizationItem(item) {
+  if (!item || typeof item !== "object" || is2gisAdOrTechnicalItem(item)) return false;
+  const id = normalize2gisOrgId(item?.id || item?.branch_id || item?.firm_id);
+  const title = firstNonEmpty(item?.name, item?.title);
+  return isValid2gisOrgId(id) && !!title;
+}
+
+function classify2gisResponse(url) {
+  const value = String(url || "");
+  return /\/items\/byid(?:[/?]|$)/i.test(value) ? "detail" : "search";
+}
+
+function extract2gisItems(payload) {
+  const candidates = [
+    payload?.result?.items,
+    payload?.items,
+    payload?.result?.branches,
+    payload?.result?.firm,
+    payload?.data ? [payload.data] : null
+  ];
+  for (const value of candidates) {
+    if (Array.isArray(value)) return value;
+    if (value && typeof value === "object") return [value];
+  }
+  return [];
+}
+
+function get2gisRowQuality(row) {
+  if (!row) return 0;
+  return ["title", "rating", "reviews", "categories_all", "address", "lat", "lon"]
+    .reduce((score, key) => score + (row[key] !== "" && row[key] != null ? 1 : 0), 0);
+}
+
+function merge2gisRows(previous, incoming, incomingKind, previousKind = "") {
+  const merged = { ...(previous || {}) };
+  for (const [key, value] of Object.entries(incoming || {})) {
+    if (value === "" || value == null || value === "[object Object]") continue;
+    const oldValue = merged[key];
+    const authoritative = incomingKind === "detail" || (incomingKind === "search" && previousKind !== "detail");
+    const richerDomTitle = incomingKind === "dom" && key === "title" && String(value).length > String(oldValue || "").length;
+    if (oldValue === "" || oldValue == null || authoritative || richerDomTitle || key === "scraped_at") {
+      merged[key] = value;
+    }
+  }
+  merged.org_id = incoming.org_id || previous?.org_id || "";
+  merged.url = build2gisFirmUrl(merged.org_id);
+  return merged;
+}
+
+function store2gisItem(item, sourceUrl) {
+  if (!is2gisOrganizationItem(item)) return false;
+  const row = normalize2gisItemToRow(item, sourceUrl);
+  if (!row.org_id) return false;
+  const kind = classify2gisResponse(sourceUrl);
+  const previous = GIS2_CACHE.get(row.org_id) || {};
+  const oldMeta = GIS2_META.get(row.org_id) || {};
+  const merged = merge2gisRows(previous, row, kind, oldMeta.kind || "");
+  GIS2_CACHE.set(row.org_id, merged);
+  GIS2_META.set(row.org_id, {
+    ...oldMeta,
+    kind: oldMeta.kind === "detail" ? "detail" : kind,
+    quality: get2gisRowQuality(merged),
+    updatedAt: Date.now()
+  });
+  return true;
+}
+
 function normalize2gisItemToRow(item, urlHint) {
   const rawId = String(item?.id || item?.branch_id || item?.firm_id || "").trim();
 
@@ -267,39 +517,30 @@ function normalize2gisItemToRow(item, urlHint) {
   const title = String(item?.name || item?.title || "").trim();
 
   const rating = coerceNumberString(
-    item?.rating || item?.reviews_rating || item?.stat?.rating || item?.reviews?.rating
+    item?.reviews?.general_rating || item?.rating || item?.reviews_rating ||
+    item?.stat?.rating || item?.reviews?.rating
   )?.replace(".", ",") || "";
 
   const reviews = coerceNumberString(
-    item?.reviews_count || item?.review_count || item?.reviews?.count ||
+    item?.reviews?.general_review_count || item?.reviews_count || item?.review_count || item?.reviews?.count ||
     item?.stat?.reviews_count || item?.stat?.rating_count
   );
 
-  const address = String(
-    item?.address_name || item?.address?.name || item?.address?.text || item?.address || ""
-  ).replace(/\s+/g, " ").trim();
+  const address = firstNonEmpty(
+    item?.address_name,
+    item?.address?.name,
+    item?.address?.text,
+    item?.address?.full_name,
+    item?.address
+  );
 
-  let lat = "", lon = "";
-  const p = item?.point || item?.location || item?.geometry?.centroid || item?.coords || item?.coord;
-  if (p && typeof p === "object") {
-    lat = coerceNumberString(p.lat ?? p.latitude ?? (Array.isArray(p) ? p[1] : "")).replace(",", ".");
-    lon = coerceNumberString(p.lon ?? p.lng ?? p.longitude ?? (Array.isArray(p) ? p[0] : "")).replace(",", ".");
-  }
+  const { lat, lon } = extract2gisCoordinates(item, urlHint);
 
   const categories_all = pick2gisCategories(item);
   const photos_count = coerceNumberString(item?.photos_count || item?.photo_count || item?.photos?.count);
 
   // url: берём из item если есть, иначе строим сами
-  let url =
-    normalize2gisUrl(item?.url) ||
-    normalize2gisUrl(item?.link) ||
-    normalize2gisUrl(item?.share_link) ||
-    "";
-
-  if (!url && rawId) {
-    // URL строим по rawId (составной id сохраняем в URL, как в 2ГИС)
-    url = build2gisFirmUrl(rawId);
-  }
+  const url = build2gisFirmUrl(org_id);
 
   return {
     org_id,
@@ -345,24 +586,12 @@ window.addEventListener("message", (ev) => {
 
   // 2GIS: JSON pages of search/items
   if (d.kind === "2gis_json" && d.url && d.payload && typeof d.payload === "object") {
+    ensure2gisContext();
     const url = String(d.url || "");
     const payload = d.payload;
-    const items = payload?.result?.items || payload?.items || payload?.result?.branches || payload?.result?.firm || [];
-    const arr = Array.isArray(items) ? items : (Array.isArray(payload?.result) ? payload.result : []);
-    for (const it of arr) {
-      const row = normalize2gisItemToRow(it, url);
-      if (!row.org_id) continue;
-
-      const key = row.org_id; // числовой
-
-      // merge without overwriting non-empty with empty
-      const prev = GIS2_CACHE.get(key) || {};
-      const merged = { ...prev, ...row, org_id: key };
-      for (const k of Object.keys(merged)) {
-        if (merged[k] === "" && prev[k] != null && prev[k] !== "") merged[k] = prev[k];
-      }
-      GIS2_CACHE.set(key, merged);
-    }
+    for (const item of extract2gisItems(payload)) store2gisItem(item, url);
+    GIS2_SCAN.discovered = GIS2_CACHE.size;
+    emit2gisScanState();
   }
 }, false);
 
@@ -385,6 +614,408 @@ const COLUMN_ORDER = [
 ];
 
 const ACTIVE_DOMAIN = detectDomainByLocation();
+
+function get2gisScanState() {
+  const withCoordinates = count2gisCoordinateRows();
+  const withBaseData = count2gisBaseRows();
+  return {
+    ...GIS2_SCAN,
+    warmed: count2gisReadyRows(),
+    cached: GIS2_CACHE.size,
+    withCoordinates,
+    missingCoordinates: Math.max(0, GIS2_CACHE.size - withCoordinates),
+    withBaseData,
+    missingBaseData: Math.max(0, GIS2_CACHE.size - withBaseData)
+  };
+}
+
+function count2gisReadyRows() {
+  let ready = 0;
+  for (const row of GIS2_CACHE.values()) {
+    if (get2gisRowQuality(row) >= 6) ready++;
+  }
+  return ready;
+}
+
+function count2gisCoordinateRows() {
+  let ready = 0;
+  for (const row of GIS2_CACHE.values()) {
+    if (normalize2gisCoordinatePair(row?.lat, row?.lon).lat) ready++;
+  }
+  return ready;
+}
+
+function count2gisBaseRows() {
+  let ready = 0;
+  for (const [orgId, row] of GIS2_CACHE.entries()) {
+    const hasNetworkItem = GIS2_META.has(orgId);
+    const richFields = ["rating", "reviews", "categories_all", "address"]
+      .filter((key) => row?.[key] !== "" && row?.[key] != null).length;
+    if (hasNetworkItem || richFields >= 2) ready++;
+  }
+  return ready;
+}
+
+function emit2gisScanState() {
+  if (typeof window === "undefined") return;
+  try {
+    window.dispatchEvent(new CustomEvent("MAPS_EXPORT_2GIS_SCAN_STATE", {
+      detail: get2gisScanState()
+    }));
+  } catch {}
+}
+
+function waitMs(ms) {
+  return new Promise(resolve => setTimeout(resolve, ms));
+}
+
+function get2gisFirmAnchors() {
+  const seen = new Set();
+  return qsa(document, 'a[href*="/firm/"]').filter(anchor => {
+    const { org_id } = clean2gisOrgUrl(anchor.href);
+    if (!org_id || seen.has(org_id)) return false;
+    seen.add(org_id);
+    return true;
+  });
+}
+
+function get2gisCardRoot(anchor) {
+  let node = anchor?.parentElement || null;
+  let best = node;
+  for (let level = 0; node && level < 8; level++, node = node.parentElement) {
+    const firmLinks = node.querySelectorAll?.('a[href*="/firm/"]').length || 0;
+    if (firmLinks > 1) break;
+    if (firmLinks === 1) best = node;
+  }
+  return best || anchor?.parentElement || anchor;
+}
+
+function clean2gisDomLine(value) {
+  return String(value ?? "").replace(/[\u200B-\u200D\uFEFF]/g, "").replace(/\u00a0/g, " ").replace(/\s+/g, " ").trim();
+}
+
+function parse2gisDomCard(anchor) {
+  const card = get2gisCardRoot(anchor);
+  const lines = String(card?.innerText || "").split(/\r?\n/).map(clean2gisDomLine).filter(Boolean);
+  const baseTitle = clean2gisDomLine(anchor?.getAttribute?.("aria-label") || anchor?.getAttribute?.("title") || txt(anchor));
+  const titleIndex = Math.max(0, lines.findIndex((line) => line === baseTitle));
+  const subtype = lines[titleIndex + 1] || "";
+  const subtypeUsable = subtype && subtype.length < 90 && !/^(?:\d+[.,]\d+|\(\d+\)|подтвержд[её]н|премия|реклама|рекомендуем|открыто|закрыто)$/i.test(subtype);
+  const title = subtypeUsable && !baseTitle.toLowerCase().includes(subtype.toLowerCase())
+    ? `${baseTitle}, ${subtype.toLowerCase()}`
+    : baseTitle;
+  const rating = (lines.find((line) => /^\d(?:[.,]\d)$/.test(line)) || "").replace(".", ",");
+  const reviews = (lines.find((line) => /^\(\s*\d[\d\s]*\s*\)$/.test(line)) || "").replace(/\D/g, "");
+
+  let address = lines.find((line) =>
+    /(?:улиц|проспект|переул|шоссе|площад|бульвар|набережн|проезд|тракт|микрорайон|квартал|, ?\s*\d)/i.test(line) &&
+    !/(?:цена|чек|звезд|мест|номер на час)/i.test(line)
+  ) || "";
+  address = address.replace(/\s*\d+\s*филиал\S*$/i, "").trim();
+  const addressParts = address.split(",").map(clean2gisDomLine).filter(Boolean);
+  if (addressParts.length >= 3 && !/\d/.test(addressParts[addressParts.length - 1])) addressParts.pop();
+  address = addressParts.join(", ");
+
+  const featureLine = lines.find((line) => line.includes("·") && line !== address) || "";
+  const firstFeature = clean2gisDomLine(featureLine.split("·")[0]);
+  const featureLooksLikeCategory = firstFeature && !/(?:₽|цена|чек|номер на час|wi-?fi|звезд|мест|завтрак|парков)/i.test(firstFeature);
+  const categories_all = featureLooksLikeCategory ? firstFeature : (subtypeUsable ? subtype : "");
+
+  return { title, rating, reviews, categories_all, address };
+}
+
+function get2gisAnchorTitle(anchor) {
+  const card = get2gisCardRoot(anchor);
+  return firstNonEmpty(
+    anchor.getAttribute?.("aria-label"),
+    anchor.getAttribute?.("title"),
+    txt(anchor),
+    txt(card?.querySelector?.("h1, h2, h3, [class*=title]"))
+  );
+}
+
+function remember2gisAnchor(anchor) {
+  const { org_id, url } = clean2gisOrgUrl(anchor?.href || "");
+  if (!org_id) return "";
+  const previous = GIS2_CACHE.get(org_id) || {};
+  const domRow = parse2gisDomCard(anchor);
+  const title = previous.title || domRow.title || get2gisAnchorTitle(anchor);
+  const coordinates = coordinatesFrom2gisUrl(anchor?.href || "");
+  if (title || (coordinates.lat && coordinates.lon)) {
+    GIS2_CACHE.set(org_id, merge2gisRows(previous, {
+      org_id,
+      title,
+      rating: domRow.rating,
+      reviews: domRow.reviews,
+      categories_all: domRow.categories_all,
+      address: domRow.address,
+      lat: coordinates.lat,
+      lon: coordinates.lon,
+      url,
+      scraped_at: new Date().toISOString()
+    }, "dom"));
+  }
+  return org_id;
+}
+
+function find2gisScrollContainer(anchors) {
+  let best = null;
+  let bestScore = -1;
+  for (const anchor of anchors.slice(0, 12)) {
+    let node = anchor.parentElement;
+    for (let level = 0; node && level < 10; level++, node = node.parentElement) {
+      const style = getComputedStyle(node);
+      const scrollable = node.scrollHeight > node.clientHeight + 80 && /auto|scroll/.test(style.overflowY || "");
+      if (!scrollable) continue;
+      const score = node.querySelectorAll?.('a[href*="/firm/"]').length || 0;
+      if (score > bestScore) {
+        best = node;
+        bestScore = score;
+      }
+    }
+  }
+  return best || document.scrollingElement || document.documentElement;
+}
+
+function fire2gisWarmEvents(anchor) {
+  try { anchor.scrollIntoView({ block: "center", inline: "nearest", behavior: "instant" }); } catch {}
+  const card = get2gisCardRoot(anchor);
+  const targets = [card, anchor].filter((node, index, all) => node && all.indexOf(node) === index);
+  for (const target of targets) {
+    for (const type of ["pointerover", "mouseover", "mouseenter", "focusin"]) {
+      try {
+        const EventCtor = type.startsWith("pointer") && typeof PointerEvent === "function" ? PointerEvent : MouseEvent;
+        target.dispatchEvent(new EventCtor(type, { bubbles: true, cancelable: true, view: window }));
+      } catch {}
+    }
+  }
+}
+
+async function warm2gisAnchor(anchor) {
+  const orgId = remember2gisAnchor(anchor);
+  if (!orgId) return false;
+  // Быстрый режим не открывает карточку организации: это меняло маршрут и
+  // масштаб карты. Короткого hover достаточно для виртуализации DOM, а
+  // недостающие поля будут получены отдельным подробным досбором 2ГИС.
+  fire2gisWarmEvents(anchor);
+  await waitMs(25);
+  return get2gisRowQuality(GIS2_CACHE.get(orgId)) >= 4;
+}
+
+function get2gisPageSignature() {
+  return get2gisFirmAnchors().slice(0, 8)
+    .map(anchor => clean2gisOrgUrl(anchor.href).org_id)
+    .filter(Boolean)
+    .join("|");
+}
+
+async function settle2gisPageData(pageIds, timeoutMs = 2600) {
+  const ids = Array.from(new Set(pageIds || [])).filter(Boolean);
+  if (!ids.length) return { ready: 0, pending: 0 };
+  const deadline = Date.now() + timeoutMs;
+  while (!GIS2_SCAN.stopRequested && Date.now() < deadline) {
+    const pending = ids.filter((id) => !GIS2_META.has(id));
+    if (!pending.length) return { ready: ids.length, pending: 0 };
+    const pendingSet = new Set(pending);
+    for (const anchor of get2gisFirmAnchors()) {
+      const id = clean2gisOrgUrl(anchor.href).org_id;
+      if (pendingSet.has(id)) fire2gisWarmEvents(anchor);
+    }
+    GIS2_SCAN.message = `Страница ${GIS2_SCAN.page}: ожидаю базовые данные ${ids.length - pending.length}/${ids.length}`;
+    emit2gisScanState();
+    await waitMs(180);
+  }
+  const pending = ids.filter((id) => !GIS2_META.has(id)).length;
+  return { ready: ids.length - pending, pending };
+}
+
+function get2gisCurrentPageNumber() {
+  const urlMatch = String(location.pathname || "").match(/\/page\/(\d+)/i);
+  if (urlMatch) return Number(urlMatch[1]) || 1;
+  const current = document.querySelector('[aria-current="page"], [class*="pagination"] [class*="active"]');
+  const n = Number(String(txt(current)).replace(/\D/g, ""));
+  return Number.isFinite(n) && n > 0 ? n : 1;
+}
+
+function find2gisNextPageControl() {
+  const requestedSelector = "#root > div > div > div._1sf34doj > div._1u4plm2 > div:nth-child(3) > div > div > div > div:nth-child(2) > div > div > div > div._1tdquig > div._z72pvu > div._3zzdxk > div > div > div > div._1x4k6z7 > div._5ocwns > div._n5hmn94 > svg";
+  const requestedArrow = document.querySelector(requestedSelector);
+  const requestedContainer = requestedArrow?.closest("div._5ocwns") || null;
+  const containers = [requestedContainer, ...qsa(document, "div._5ocwns")].filter((node, index, all) => node && all.indexOf(node) === index);
+
+  // Начиная со второй страницы класс _n5hmn94 назначен обеим стрелкам.
+  // Первая из них ведёт назад, последняя — вперёд. На последней странице
+  // правая стрелка становится _7q94tr, поэтому такой контейнер пропускаем.
+  for (const container of containers) {
+    const forward = container.lastElementChild;
+    if (!forward?.matches?.("div._n5hmn94")) continue;
+    const svg = forward.querySelector("svg");
+    const transform = String(svg?.style?.transform || "");
+    if (transform && !/rotate\(\s*-90deg\s*\)/i.test(transform)) continue;
+    GIS2_SCAN.nextControl = "requested-forward-arrow";
+    return forward;
+  }
+
+  const current = get2gisCurrentPageNumber();
+  const numbered = qsa(document, 'a[href*="/page/"]').map(anchor => {
+    const match = String(anchor.getAttribute("href") || "").match(/\/page\/(\d+)/i);
+    return { anchor, page: match ? Number(match[1]) : 0 };
+  }).filter(item => item.page > current).sort((a, b) => a.page - b.page);
+  if (numbered.length) {
+    GIS2_SCAN.nextControl = "numbered-link-fallback";
+    return numbered[0].anchor;
+  }
+
+  const semantic = qsa(document, '[class*="pagination"] a, [class*="pagination"] button, nav a, nav button').find(element => {
+    const label = `${element.getAttribute?.("aria-label") || ""} ${element.getAttribute?.("title") || ""} ${txt(element)}`;
+    return /следующ|далее|next/i.test(label) && !element.disabled && element.getAttribute?.("aria-disabled") !== "true";
+  }) || null;
+  GIS2_SCAN.nextControl = semantic ? "semantic-fallback" : "not-found";
+  return semantic;
+}
+
+async function scan2gisCurrentPage(globalSeen) {
+  let stableRounds = 0;
+  let previousCount = globalSeen.size;
+  let rounds = 0;
+  let container = null;
+  const pageSeen = new Set();
+
+  while (!GIS2_SCAN.stopRequested && stableRounds < 4 && rounds < 80) {
+    rounds++;
+    const anchors = get2gisFirmAnchors();
+    for (const anchor of anchors) {
+      const id = clean2gisOrgUrl(anchor.href).org_id;
+      if (id) pageSeen.add(id);
+    }
+    if (!container || !document.contains(container)) container = find2gisScrollContainer(anchors);
+
+    const fresh = anchors.filter(anchor => {
+      const id = clean2gisOrgUrl(anchor.href).org_id;
+      return id && !globalSeen.has(id);
+    });
+
+    for (const anchor of fresh) {
+      if (GIS2_SCAN.stopRequested) break;
+      const id = clean2gisOrgUrl(anchor.href).org_id;
+      globalSeen.add(id);
+      GIS2_SCAN.discovered = Math.max(GIS2_CACHE.size, globalSeen.size);
+      GIS2_SCAN.message = `Страница ${GIS2_SCAN.page}: карточка ${globalSeen.size}`;
+      emit2gisScanState();
+      await warm2gisAnchor(anchor);
+      GIS2_SCAN.warmed = count2gisReadyRows();
+      emit2gisScanState();
+      await waitMs(90);
+    }
+
+    if (globalSeen.size === previousCount) stableRounds++;
+    else stableRounds = 0;
+    previousCount = globalSeen.size;
+
+    if (container) {
+      const oldTop = container.scrollTop;
+      const step = Math.max(320, Math.floor(container.clientHeight * 0.78));
+      container.scrollTop = Math.min(container.scrollHeight, oldTop + step);
+      if (container.scrollTop === oldTop && !fresh.length) stableRounds++;
+    }
+    await waitMs(420);
+  }
+  return Array.from(pageSeen);
+}
+
+async function waitFor2gisPageChange(oldSignature, oldPage) {
+  const deadline = Date.now() + 12000;
+  while (Date.now() < deadline && !GIS2_SCAN.stopRequested) {
+    await waitMs(250);
+    const next = get2gisPageSignature();
+    const page = get2gisCurrentPageNumber();
+    if (page > oldPage && next && next !== oldSignature) return true;
+  }
+  return false;
+}
+
+async function start2gisAutoScan(options = {}) {
+  if (ACTIVE_DOMAIN !== "2gis") throw new Error("Автосбор страниц доступен только в 2ГИС");
+  if (GIS2_SCAN.running) return get2gisScanState();
+
+  ensure2gisContext();
+  const maxPages = Math.max(1, Math.min(Number(options.maxPages) || 50, 100));
+  const globalSeen = new Set();
+  const visitedPages = new Set();
+  let terminalMessage = "";
+  Object.assign(GIS2_SCAN, {
+    running: true,
+    stopRequested: false,
+    page: get2gisCurrentPageNumber(),
+    pagesDone: 0,
+    discovered: GIS2_CACHE.size,
+    warmed: 0,
+    failed: 0,
+    nextControl: "",
+    message: "Запуск автосбора…",
+    startedAt: new Date().toISOString(),
+    finishedAt: ""
+  });
+  emit2gisScanState();
+
+  try {
+    for (let index = 0; index < maxPages && !GIS2_SCAN.stopRequested; index++) {
+      GIS2_SCAN.page = get2gisCurrentPageNumber();
+      if (visitedPages.has(GIS2_SCAN.page)) {
+        terminalMessage = `Остановлено: страница ${GIS2_SCAN.page} уже обработана`;
+        break;
+      }
+      visitedPages.add(GIS2_SCAN.page);
+      GIS2_SCAN.message = `Сканируется страница ${GIS2_SCAN.page}`;
+      emit2gisScanState();
+      const pageIds = await scan2gisCurrentPage(globalSeen);
+      await settle2gisPageData(pageIds);
+      GIS2_SCAN.pagesDone++;
+      emit2gisScanState();
+
+      if (index + 1 >= maxPages) break;
+      const next = find2gisNextPageControl();
+      if (!next || GIS2_SCAN.stopRequested) break;
+      const pageBefore = GIS2_SCAN.page;
+      const signature = get2gisPageSignature();
+      try { next.scrollIntoView({ block: "center", behavior: "instant" }); } catch {}
+      next.click();
+      GIS2_SCAN.message = "Открывается следующая страница…";
+      emit2gisScanState();
+      if (!await waitFor2gisPageChange(signature, pageBefore)) {
+        terminalMessage = "Следующая страница не загрузилась";
+        break;
+      }
+      const pageAfter = get2gisCurrentPageNumber();
+      if (pageAfter <= pageBefore || visitedPages.has(pageAfter)) {
+        terminalMessage = `Защита пагинации: переход ${pageBefore} → ${pageAfter} остановлен`;
+        break;
+      }
+      await waitMs(650);
+    }
+  } finally {
+    GIS2_SCAN.running = false;
+    GIS2_SCAN.finishedAt = new Date().toISOString();
+    GIS2_SCAN.discovered = GIS2_CACHE.size;
+    const coordinateCount = count2gisCoordinateRows();
+    const baseCount = count2gisBaseRows();
+    const coordinateStatus = `координаты ${coordinateCount}/${GIS2_CACHE.size}`;
+    const baseStatus = `база ${baseCount}/${GIS2_CACHE.size}`;
+    GIS2_SCAN.message = GIS2_SCAN.stopRequested
+      ? `Остановлено: ${GIS2_CACHE.size} объектов · ${coordinateStatus} · ${baseStatus}`
+      : terminalMessage || `Готово: ${GIS2_CACHE.size} объектов · ${coordinateStatus} · ${baseStatus}`;
+    emit2gisScanState();
+  }
+  return get2gisScanState();
+}
+
+function stop2gisAutoScan() {
+  if (!GIS2_SCAN.running) return get2gisScanState();
+  GIS2_SCAN.stopRequested = true;
+  GIS2_SCAN.message = "Останавливаю автосбор…";
+  emit2gisScanState();
+  return get2gisScanState();
+}
 
 function parseCard(card) {
   const link = card.querySelector('a[href*="/maps/org/"]');
@@ -418,6 +1049,7 @@ function parseCard(card) {
 
 function collectAllCards() {
   if (ACTIVE_DOMAIN === "2gis") {
+    ensure2gisContext();
     const out = Array.from(GIS2_CACHE.values()).filter(r => r && r.org_id);
 
     // fallback: если сеть ещё не дала items — добираем id из /firm/
@@ -428,16 +1060,19 @@ function collectAllCards() {
         const { org_id, url } = clean2gisOrgUrl(a.href);
         if (!org_id || seen.has(org_id)) continue;
         seen.add(org_id);
+        const title = get2gisAnchorTitle(a);
+        if (!title) continue;
+        const coordinates = coordinatesFrom2gisUrl(a.href);
         out.push({
           org_id,
-          title: txt(a) || "",
+          title,
           rating: "",
           reviews: "",
           categories_all: "",
           address: "",
           photos_count: "",
-          lat: "",
-          lon: "",
+          lat: coordinates.lat,
+          lon: coordinates.lon,
           url,
           scraped_at: new Date().toISOString()
         });
@@ -531,7 +1166,30 @@ window.__MAPS_EXPORT_COLLECTOR__ = {
   source: ACTIVE_DOMAIN,
   columns: COLUMN_ORDER,
   collect: collectAllCards,
-  context: getSnapshotContext
+  context: getSnapshotContext,
+  getScanState: get2gisScanState,
+  startAutoScan: start2gisAutoScan,
+  stopAutoScan: stop2gisAutoScan,
+  clear: () => {
+    if (ACTIVE_DOMAIN === "2gis") reset2gisCache("Кэш 2ГИС очищен");
+  }
+};
+
+window.__MAPS_EXPORT_2GIS_TEST__ = {
+  normalizeOrgId: normalize2gisOrgId,
+  isValidOrgId: isValid2gisOrgId,
+  cleanOrgUrl: clean2gisOrgUrl,
+  isOrganizationItem: is2gisOrganizationItem,
+  normalizeItem: normalize2gisItemToRow,
+  coordinatesFromUrl: coordinatesFrom2gisUrl,
+  extractCoordinates: extract2gisCoordinates,
+  storeItem: store2gisItem,
+  settlePageData: settle2gisPageData,
+  parseDomCard: parse2gisDomCard,
+  mergeRows: merge2gisRows,
+  quality: get2gisRowQuality,
+  warmAnchor: warm2gisAnchor,
+  findNextPageControl: find2gisNextPageControl
 };
 
 // ===== messages from popup =====

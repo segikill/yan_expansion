@@ -9,17 +9,6 @@ const OBJECT_COLS = [
   "first_seen_at", "last_seen_at"
 ];
 
-const SNAPSHOT_COLS = [
-  "snapshot_id", "snapshot_index", "source", "query", "page_url",
-  "center_lat", "center_lon", "zoom",
-  "collected_count", "added_count", "duplicate_count", "created_at"
-];
-
-const OBSERVATION_COLS = [
-  "snapshot_id", "snapshot_index", "object_key", "source", "org_id", "title",
-  "lat", "lon", "url", "seen_at"
-];
-
 const $ = (id) => document.getElementById(id);
 
 function setStatus(text) {
@@ -27,7 +16,7 @@ function setStatus(text) {
 }
 
 function setBusy(flag) {
-  for (const id of ["btnShowPanel", "btnEnrichment", "btnExport", "btnClear"]) {
+  for (const id of ["btnShowPanel", "btnEnrichment", "btnExport", "btnClear", "btnInstructions"]) {
     const el = $(id);
     if (el) el.disabled = !!flag;
   }
@@ -142,14 +131,12 @@ async function exportSession() {
   const session = await loadSession();
   const objects = Object.values(session.objects || {});
   if (!objects.length) {
-    alert("Нет накопленных данных.");
-    return;
+    setStatus("Нет данных для экспорта. Сначала зафиксируйте карточки на карте.");
+    return false;
   }
 
   const wb = XLSX.utils.book_new();
   XLSX.utils.book_append_sheet(wb, sheetFromRows(OBJECT_COLS, objects.map(r => normalizeForSheet(r, OBJECT_COLS))), "objects");
-  XLSX.utils.book_append_sheet(wb, sheetFromRows(SNAPSHOT_COLS, session.snapshots.map(r => normalizeForSheet(r, SNAPSHOT_COLS))), "snapshots");
-  XLSX.utils.book_append_sheet(wb, sheetFromRows(OBSERVATION_COLS, session.observations.map(r => normalizeForSheet(r, OBSERVATION_COLS))), "observations");
 
   const ts = new Date();
   const pad = (n) => String(n).padStart(2, "0");
@@ -162,6 +149,7 @@ async function exportSession() {
   } else {
     XLSX.writeFile(wb, fname, { bookType: "xlsx", bookSST: true, compression: true });
   }
+  return true;
 }
 
 async function refreshStats() {
@@ -173,6 +161,7 @@ async function refreshStats() {
   const tab = await activeTab();
   const source = detectDomain(tab?.url || "");
   $("source").textContent = sourceLabel(source);
+  $("source").dataset.source = source;
   $("sessionCount").textContent = String(Object.keys(session.objects || {}).length);
   $("snapshotCount").textContent = String((session.snapshots || []).length);
   $("detailCount").textContent = String(Object.values(detailResults).filter((item) => item?.status === "success").length);
@@ -188,8 +177,14 @@ async function refreshStats() {
 }
 
 async function openEnrichment() {
-  const response = await chrome.runtime.sendMessage({ type: "OPEN_ENRICHMENT" });
+  const tab = await activeTab();
+  const response = await chrome.runtime.sendMessage({ type: "OPEN_ENRICHMENT", source_tab_id: tab?.id });
   if (!response?.ok) setStatus(response?.error || "Не удалось открыть досбор.");
+  window.close();
+}
+
+async function openInstructions() {
+  await chrome.tabs.create({ url: chrome.runtime.getURL("instructions.html") });
   window.close();
 }
 
@@ -216,17 +211,35 @@ async function showPanel() {
 }
 
 async function clearSession() {
-  if (!confirm("Сбросить накопленную сессию?")) return;
+  if (!confirm("Сбросить базовую сессию, очередь и результаты досбора? Сначала скачайте нужные XLSX.")) return;
+  const resetResponse = await chrome.runtime.sendMessage({ type: "ENRICHMENT_FORCE_RESET" });
+  if (!resetResponse?.ok) {
+    setStatus(resetResponse?.error || "Не удалось сбросить досбор.");
+    return;
+  }
   const fresh = emptySession();
   await chrome.storage.local.set({ [STORAGE_KEY]: fresh });
-  setStatus("Сессия сброшена.");
+  setStatus("Основная сессия и досбор сброшены.");
   await refreshStats();
 }
 
 document.addEventListener("DOMContentLoaded", async () => {
-  await refreshStats();
   $("btnShowPanel").addEventListener("click", showPanel);
   $("btnEnrichment").addEventListener("click", openEnrichment);
-  $("btnExport").addEventListener("click", exportSession);
+  $("btnExport").addEventListener("click", async () => {
+    setBusy(true);
+    try {
+      const exported = await exportSession();
+      if (exported) setStatus("XLSX подготовлен к скачиванию.");
+    } finally {
+      setBusy(false);
+    }
+  });
   $("btnClear").addEventListener("click", clearSession);
+  $("btnInstructions").addEventListener("click", openInstructions);
+  try {
+    await refreshStats();
+  } catch (error) {
+    setStatus(`Не удалось обновить статистику: ${error?.message || error}`);
+  }
 });

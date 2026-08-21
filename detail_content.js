@@ -71,6 +71,8 @@
       if ((!value || (Array.isArray(value) && !value.length)) && overview[key]) merged[key] = overview[key];
     }
     merged.categories = Array.from(new Set([...(overview.categories || []), ...(features.categories || [])]));
+    merged.categories_all = merged.categories;
+    merged.category_first = merged.categories[0] || "";
     merged.category_data = {
       ...(features.category_data || overview.category_data || {}),
       raw_attributes: {

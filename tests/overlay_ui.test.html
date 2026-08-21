@@ -1,0 +1,137 @@
+<!doctype html>
+<html lang="ru">
+<head>
+  <meta charset="utf-8" />
+  <title>Тест плавающей панели</title>
+</head>
+<body>
+  <script>
+    const SESSION_KEY = "maps_export_session_v2";
+    const PREFS_KEY = "maps_export_overlay_prefs_v1";
+    const THEME_KEY = "maps_export_ui_theme_v1";
+    const storageListeners = [];
+    const testStorage = {
+      [SESSION_KEY]: {
+        id: "test_session",
+        version: 2,
+        created_at: new Date().toISOString(),
+        updated_at: new Date().toISOString(),
+        objects: {
+          "yandex:123": {
+            object_key: "yandex:123",
+            source: "yandex",
+            org_id: "123",
+            title: "Тестовая организация",
+            categories_all: "Гостиница",
+            url: "https://yandex.ru/maps/org/test/123/"
+          }
+        },
+        snapshots: [],
+        observations: []
+      },
+      [PREFS_KEY]: {},
+      [THEME_KEY]: "theme-light"
+    };
+
+    globalThis.chrome = {
+      storage: {
+        onChanged: { addListener(listener) { storageListeners.push(listener); } },
+        local: {
+          async get(key) { return { [key]: structuredClone(testStorage[key]) }; },
+          async set(patch) {
+            const changes = {};
+            for (const [key, value] of Object.entries(patch)) {
+              changes[key] = { oldValue: structuredClone(testStorage[key]), newValue: structuredClone(value) };
+              testStorage[key] = structuredClone(value);
+            }
+            for (const listener of storageListeners) listener(changes, "local");
+          }
+        }
+      },
+      runtime: {
+        onMessage: { addListener() {} },
+        async sendMessage() { return { ok: true }; }
+      }
+    };
+    globalThis.__MAPS_EXPORT_COLLECTOR__ = {
+      source: "yandex",
+      collect() { return []; },
+      context() { return { source: "yandex", query: "test", page_url: location.href, map_state: {} }; }
+    };
+    globalThis.XLSX = {
+      utils: {
+        book_new() { return { SheetNames: [], Sheets: {} }; },
+        aoa_to_sheet(rows) { return { rows }; },
+        book_append_sheet(book, sheet, name) { book.SheetNames.push(name); book.Sheets[name] = sheet; }
+      },
+      writeFileXLSX(book) { globalThis.__TEST_WORKBOOK__ = book; },
+      writeFile(book) { globalThis.__TEST_WORKBOOK__ = book; }
+    };
+  </script>
+  <script src="../overlay.js"></script>
+  <script>
+    (async () => {
+      const wait = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
+      for (let attempt = 0; attempt < 50 && !document.getElementById("maps-export-overlay-host"); attempt += 1) await wait(20);
+
+      const host = document.getElementById("maps-export-overlay-host");
+      const initialTheme = host?.dataset.theme;
+      const root = host?.shadowRoot?.querySelector(".mx-wrap");
+      const collapse = host?.shadowRoot?.getElementById("collapse");
+      collapse?.click();
+      await wait(40);
+
+      const miniBar = host?.shadowRoot?.getElementById("miniBar");
+      const miniNumbers = host?.shadowRoot?.getElementById("miniNumbers");
+      const before = host?.getBoundingClientRect();
+      const startX = (before?.left || 200) + 24;
+      const startY = (before?.top || 100) + 16;
+      miniNumbers?.dispatchEvent(new PointerEvent("pointerdown", {
+        bubbles: true, pointerId: 1, pointerType: "mouse", button: 0, isPrimary: true, clientX: startX, clientY: startY
+      }));
+      miniBar?.dispatchEvent(new PointerEvent("pointermove", {
+        bubbles: true, pointerId: 1, pointerType: "mouse", button: 0, isPrimary: true, clientX: startX - 100, clientY: startY + 50
+      }));
+      miniBar?.dispatchEvent(new PointerEvent("pointerup", {
+        bubbles: true, pointerId: 1, pointerType: "mouse", button: 0, isPrimary: true, clientX: startX - 100, clientY: startY + 50
+      }));
+      await wait(60);
+
+      const syncedSession = structuredClone(testStorage[SESSION_KEY]);
+      syncedSession.objects["yandex:456"] = {
+        object_key: "yandex:456",
+        source: "yandex",
+        org_id: "456",
+        title: "Вторая организация",
+        categories_all: "Кафе",
+        url: "https://yandex.ru/maps/org/test/456/"
+      };
+      await chrome.storage.local.set({ [SESSION_KEY]: syncedSession });
+      await chrome.storage.local.set({ [THEME_KEY]: "theme-neon" });
+      await wait(30);
+
+      host?.shadowRoot?.getElementById("xlsx")?.click();
+      await wait(20);
+      const after = host?.getBoundingClientRect();
+      const checks = {
+        collapsed: root?.classList.contains("collapsed") === true,
+        collapsed_dragged: Number.isFinite(before?.left) && Number.isFinite(after?.left) && after.left < before.left - 50 && after.top > before.top + 20,
+        position_saved: Number(testStorage[PREFS_KEY]?.left) === after?.left && Number(testStorage[PREFS_KEY]?.top) === after?.top,
+        external_storage_sync: host?.shadowRoot?.getElementById("total")?.textContent === "2",
+        one_export_sheet: JSON.stringify(globalThis.__TEST_WORKBOOK__?.SheetNames) === JSON.stringify(["objects"]),
+        clear_primary_action: host?.shadowRoot?.getElementById("fix")?.textContent.trim() === "Зафиксировать",
+        compact_drag_hint: miniBar?.getAttribute("title")?.includes("Перетащите") === true,
+        accessible_status: host?.shadowRoot?.querySelector(".mx-status")?.getAttribute("aria-live") === "polite",
+        shared_light_theme_applied: initialTheme === "theme-light",
+        shared_theme_updates_live: host?.dataset.theme === "theme-neon"
+      };
+      const passed = Object.values(checks).every(Boolean);
+      document.documentElement.dataset.testResult = passed ? "PASS" : "FAIL";
+      const output = document.createElement("pre");
+      output.id = "test-output";
+      output.textContent = JSON.stringify({ passed, checks, before, after, workbook: globalThis.__TEST_WORKBOOK__ }, null, 2);
+      document.body.appendChild(output);
+    })();
+  </script>
+</body>
+</html>

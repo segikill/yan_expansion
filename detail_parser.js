@@ -1,7 +1,7 @@
 (function initMapsDetailParser(global) {
   "use strict";
 
-  const PARSER_VERSION = "1.10.0";
+  const PARSER_VERSION = "1.12.3";
   const MAX_ATTRIBUTE_PAIRS = 160;
 
   const cleanText = (value) => String(value ?? "").replace(/\s+/g, " ").trim();
@@ -164,15 +164,14 @@
   }
 
   function parseCategories(doc, schema) {
-    const categories = [];
-    const schemaTypes = Array.isArray(schema["@type"]) ? schema["@type"] : [schema["@type"]];
-    categories.push(schema.category, ...schemaTypes);
-    categories.push(...allTexts(doc, [
-      ".business-categories-view__category",
-      '[class*="business-categories-view"] a',
-      '[class*="breadcrumbs-view__breadcrumb"]'
-    ]));
-    return unique(categories);
+    const linkedCategories = allTexts(doc, ['[class*="business-categories-view"] a']);
+    const visibleCategories = linkedCategories.length
+      ? linkedCategories
+      : allTexts(doc, [".business-categories-view__category"]);
+    if (visibleCategories.length) return visibleCategories;
+
+    const schemaCategories = Array.isArray(schema.category) ? schema.category : [schema.category];
+    return unique(schemaCategories);
   }
 
   function parseHours(doc, schema) {
@@ -421,6 +420,8 @@
       rating: parseRating(doc, schema),
       reviews: parseReviews(doc, schema),
       categories,
+      categories_all: categories,
+      category_first: categories[0] || "",
       opening_hours: hours.opening_hours,
       working_status: hours.working_status,
       close_time: hours.close_time,

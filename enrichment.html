@@ -3,100 +3,307 @@
 <head>
   <meta charset="utf-8" />
   <meta name="viewport" content="width=device-width,initial-scale=1" />
-  <meta name="theme-color" content="#050713" />
-  <title>Досбор данных по URL</title>
+  <meta name="theme-color" content="#07111f" />
+  <title>Maps Export — Досбор данных по URL</title>
   <link rel="stylesheet" href="enrichment.css" />
 </head>
 <body>
-  <div id="statusBackdrop" class="status-backdrop" aria-hidden="true">
-    <span id="statusBackdropText">ожидание</span>
+  <div class="theme-state" aria-hidden="true">
+    <input class="theme-radio" type="radio" name="ui-theme" id="theme-dark" checked>
+    <input class="theme-radio" type="radio" name="ui-theme" id="theme-gis">
+    <input class="theme-radio" type="radio" name="ui-theme" id="theme-mission">
+    <input class="theme-radio" type="radio" name="ui-theme" id="theme-bloomberg">
+    <input class="theme-radio" type="radio" name="ui-theme" id="theme-linear">
+    <input class="theme-radio" type="radio" name="ui-theme" id="theme-blueprint">
+    <input class="theme-radio" type="radio" name="ui-theme" id="theme-scada">
+    <input class="theme-radio" type="radio" name="ui-theme" id="theme-neon">
+    <input class="theme-radio" type="radio" name="ui-theme" id="theme-light">
+    <input class="theme-drawer-check" type="checkbox" id="themeDrawerToggle">
   </div>
-  <main class="shell">
-    <header class="hero">
-      <div>
-        <p class="eyebrow">Maps Export 1.10.0 · Neon Interface</p>
-        <h1>Досбор данных по URL</h1>
-        <p class="lead">Карточки открываются в отдельных неактивных вкладках. Очередь и каждый результат сохраняются локально.</p>
+
+  <aside class="theme-switcher" aria-label="Переключение темы">
+    <label class="theme-toggle" for="themeDrawerToggle" title="Темы интерфейса" role="button" tabindex="0" aria-haspopup="dialog" aria-expanded="false">
+      <span class="theme-toggle-icon" aria-hidden="true"><i></i><i></i><i></i></span>
+      <span class="theme-toggle-text">Темы</span>
+    </label>
+
+    <div class="theme-drawer" role="dialog" aria-label="Выбор темы интерфейса" aria-hidden="true">
+      <div class="theme-drawer-head">
+        <div>
+          <small>Оформление</small>
+          <strong>Тема интерфейса</strong>
+        </div>
+        <label class="theme-close" for="themeDrawerToggle" role="button" tabindex="0" aria-label="Закрыть выбор темы">×</label>
       </div>
-      <div id="jobBadge" class="badge idle">не запущен</div>
+
+      <div class="theme-list" role="radiogroup" aria-label="Доступные темы">
+        <label class="theme-option" for="theme-dark" role="radio" tabindex="0">
+          <span class="theme-preview preview-dark"><i></i><i></i><i></i></span>
+          <span><b>Dark Data Operations</b><small>графит · blue</small></span>
+          <em>01</em>
+        </label>
+        <label class="theme-option" for="theme-gis" role="radio" tabindex="0">
+          <span class="theme-preview preview-gis"><i></i><i></i><i></i></span>
+          <span><b>GIS Spatial Lab</b><small>navy · cyan · grid</small></span>
+          <em>02</em>
+        </label>
+        <label class="theme-option" for="theme-mission" role="radio" tabindex="0">
+          <span class="theme-preview preview-mission"><i></i><i></i><i></i></span>
+          <span><b>Mission Control</b><small>telemetry · green</small></span>
+          <em>03</em>
+        </label>
+        <label class="theme-option" for="theme-bloomberg" role="radio" tabindex="0">
+          <span class="theme-preview preview-bloomberg"><i></i><i></i><i></i></span>
+          <span><b>Bloomberg Terminal</b><small>dense · amber</small></span>
+          <em>04</em>
+        </label>
+        <label class="theme-option" for="theme-linear" role="radio" tabindex="0">
+          <span class="theme-preview preview-linear"><i></i><i></i><i></i></span>
+          <span><b>Linear Dark</b><small>minimal · SaaS</small></span>
+          <em>05</em>
+        </label>
+        <label class="theme-option" for="theme-blueprint" role="radio" tabindex="0">
+          <span class="theme-preview preview-blueprint"><i></i><i></i><i></i></span>
+          <span><b>Blueprint GIS</b><small>drawing · engineering</small></span>
+          <em>06</em>
+        </label>
+        <label class="theme-option" for="theme-scada" role="radio" tabindex="0">
+          <span class="theme-preview preview-scada"><i></i><i></i><i></i></span>
+          <span><b>SCADA / Industrial HMI</b><small>states · industrial</small></span>
+          <em>07</em>
+        </label>
+        <label class="theme-option" for="theme-neon" role="radio" tabindex="0">
+          <span class="theme-preview preview-neon"><i></i><i></i><i></i></span>
+          <span><b>Cyberpunk Neon</b><small>cyan · violet · magenta</small></span>
+          <em>08</em>
+        </label>
+        <label class="theme-option" for="theme-light" role="radio" tabindex="0">
+          <span class="theme-preview preview-light"><i></i><i></i><i></i></span>
+          <span><b>Minimal Light</b><small>white · neutral · blue</small></span>
+          <em>09</em>
+        </label>
+      </div>
+    </div>
+  </aside>
+
+  <div id="statusBackdrop" class="status-backdrop" aria-hidden="true"><span id="statusBackdropText">ожидание</span></div>
+
+  <main class="app-shell">
+    <header class="app-header">
+      <div class="brand-block">
+        <div class="brand-mark" aria-hidden="true">
+          <span></span><span></span><span></span>
+        </div>
+        <div>
+          <div class="product-line">
+            <span class="product-name">Maps Export</span>
+            <span class="version">1.12.3</span>
+          </div>
+          <h1>Досбор данных по URL</h1>
+          <p class="subtitle">Второй этап сбора: открытие карточек, получение деталей и локальное сохранение результата.</p>
+        </div>
+      </div>
+
+      <div class="header-actions">
+        <div class="workflow" aria-label="Этапы обработки">
+          <div class="workflow-step done">
+            <span class="step-index">01</span>
+            <span class="step-copy"><b>Базовый сбор</b><small>объекты и URL</small></span>
+          </div>
+          <span class="workflow-line"></span>
+          <div class="workflow-step current">
+            <span class="step-index">02</span>
+            <span class="step-copy"><b>Досбор</b><small>детали карточек</small></span>
+          </div>
+        </div>
+        <div id="jobBadge" class="job-badge idle" aria-live="polite"><span class="status-dot" aria-hidden="true"></span><span id="jobBadgeText">не запущен</span></div>
+      </div>
     </header>
 
-    <section id="alert" class="alert hidden">
-      <div><strong id="alertTitle">CAPTCHA</strong><span id="alertText"></span></div>
-      <button id="btnOpenWorker" class="button warning">Открыть вкладку</button>
+    <div class="theme-signature" aria-hidden="true"></div>
+
+    <section id="alert" class="system-alert hidden" aria-live="assertive">
+      <div class="alert-icon" aria-hidden="true">!</div>
+      <div class="alert-copy">
+        <strong id="alertTitle">CAPTCHA</strong>
+        <span id="alertText"></span>
+      </div>
+      <button type="button" id="btnOpenWorker" class="button warning">Открыть вкладку</button>
     </section>
 
-    <section class="panel setup">
-      <div class="field">
-        <label for="scope">Обрабатывать</label>
-        <select id="scope">
-          <option value="unprocessed">только без успешных деталей</option>
-          <option value="errors">только ошибки</option>
-          <option value="all">все URL заново</option>
-        </select>
+    <section class="launch-card">
+      <div class="card-head compact-head">
+        <div>
+          <p class="card-kicker">Параметры задания</p>
+          <h2>Запуск обработки</h2>
+        </div>
+        <span class="head-note">Настройки применяются к новой очереди</span>
       </div>
-      <div class="field compact">
-        <label for="workers">Вкладок</label>
-        <select id="workers">
-          <option value="1">1</option>
-          <option value="2" selected>2</option>
-          <option value="4">4</option>
-        </select>
+
+      <div class="source-mode-row">
+        <label class="field source-field" for="detailSource">
+          <span>Источник подробного досбора</span>
+          <select id="detailSource">
+            <option value="yandex">Яндекс Карты — особенности карточек</option>
+            <option value="2gis">2ГИС — Инфо и items/byid</option>
+          </select>
+        </label>
+        <p id="sourceModeHint" class="source-mode-hint">Карточки Яндекса открываются в фоновых вкладках.</p>
       </div>
-      <div class="field compact">
-        <label for="maxAttempts">Попыток</label>
-        <select id="maxAttempts">
-          <option value="1">1</option>
-          <option value="2">2</option>
-          <option value="3" selected>3</option>
-          <option value="4">4</option>
-          <option value="5">5</option>
-        </select>
+
+      <div class="setup-grid">
+        <label class="field field-wide" for="scope">
+          <span>Обрабатывать</span>
+          <select id="scope">
+            <option value="unprocessed">Только без успешных деталей</option>
+            <option value="errors">Только ошибки</option>
+            <option value="all">Все URL заново</option>
+          </select>
+        </label>
+
+        <label class="field" for="workers">
+          <span>Вкладок</span>
+          <select id="workers">
+            <option value="1">1</option>
+            <option value="2" selected>2</option>
+            <option value="4">4</option>
+          </select>
+        </label>
+
+        <label class="field" for="maxAttempts">
+          <span>Попыток</span>
+          <select id="maxAttempts">
+            <option value="1">1</option>
+            <option value="2">2</option>
+            <option value="3" selected>3</option>
+            <option value="4">4</option>
+            <option value="5">5</option>
+          </select>
+        </label>
+
+        <label class="field" for="timeout">
+          <span>Таймаут, с</span>
+          <input id="timeout" type="number" min="10" max="90" value="25" />
+        </label>
+
+        <button type="button" id="btnStart" class="button primary launch-button">
+          <span class="button-glyph" aria-hidden="true">▶</span>
+          Запустить
+        </button>
       </div>
-      <div class="field compact">
-        <label for="timeout">Таймаут, с</label>
-        <input id="timeout" type="number" min="10" max="90" value="25" />
-      </div>
-      <button id="btnStart" class="button primary">Запустить</button>
     </section>
 
-    <section class="stats" aria-label="Прогресс">
-      <article><span id="statTotal">0</span><small>в очереди</small></article>
-      <article class="success"><span id="statSuccess">0</span><small>успешно</small></article>
-      <article><span id="statActive">0</span><small>в работе</small></article>
-      <article class="error"><span id="statError">0</span><small>ошибок</small></article>
-      <article><span id="statSpeed">—</span><small>объектов/мин</small></article>
-      <article><span id="statEta">—</span><small>осталось</small></article>
+    <section class="metrics" aria-label="Показатели задания">
+      <article class="metric">
+        <div class="metric-top"><span>Очередь</span><i class="metric-indicator neutral"></i></div>
+        <strong id="statTotal">0</strong>
+        <small>объектов ожидают обработки</small>
+      </article>
+      <article class="metric metric-success">
+        <div class="metric-top"><span>Успешно</span><i class="metric-indicator success"></i></div>
+        <strong id="statSuccess">0</strong>
+        <small>детали получены и сохранены</small>
+      </article>
+      <article class="metric metric-active">
+        <div class="metric-top"><span>В работе</span><i class="metric-indicator active"></i></div>
+        <strong id="statActive">0</strong>
+        <small>активных карточек сейчас</small>
+      </article>
+      <article class="metric metric-error">
+        <div class="metric-top"><span>Ошибки</span><i class="metric-indicator error"></i></div>
+        <strong id="statError">0</strong>
+        <small>задач требуют внимания</small>
+      </article>
+      <article class="metric">
+        <div class="metric-top"><span>Скорость</span><i class="metric-indicator cyan"></i></div>
+        <strong id="statSpeed">—</strong>
+        <small>объектов в минуту</small>
+      </article>
+      <article class="metric">
+        <div class="metric-top"><span>ETA</span><i class="metric-indicator violet"></i></div>
+        <strong id="statEta">—</strong>
+        <small>оценка оставшегося времени</small>
+      </article>
     </section>
 
-    <section class="panel progress-panel">
-      <div class="progress-head"><span id="progressText">Готово к запуску</span><strong id="progressPercent">0%</strong></div>
-      <div class="progress-track"><div id="progressBar" class="progress-bar"></div></div>
-      <div class="toolbar">
-        <button id="btnPause" class="button quiet">Пауза</button>
-        <button id="btnResume" class="button quiet">Продолжить</button>
-        <button id="btnRetry" class="button quiet">Повторить ошибки</button>
-        <button id="btnStop" class="button danger">Остановить</button>
-        <button id="btnExport" class="button export">XLSX с деталями</button>
+    <section class="progress-card">
+      <div class="progress-main">
+        <div class="progress-title-row">
+          <div>
+            <p class="card-kicker">Состояние задания</p>
+            <h2 id="progressText">Готово к запуску</h2>
+          </div>
+          <strong id="progressPercent" class="progress-percent">0%</strong>
+        </div>
+        <div class="progress-track" id="progressTrack" role="progressbar" aria-label="Прогресс досбора" aria-valuemin="0" aria-valuemax="100" aria-valuenow="0">
+          <div id="progressBar" class="progress-bar"></div>
+        </div>
+        <p id="statusText" class="status-text" aria-live="polite">Сначала выполните базовый сбор карточек на карте.</p>
       </div>
-      <p id="statusText" class="status-text"></p>
-    </section>
 
-    <section>
-      <div class="section-title"><h2>Рабочие вкладки</h2><span id="baseCount">0 объектов в базовом сборе</span></div>
-      <div id="workersList" class="workers empty">Нет запущенных вкладок</div>
-    </section>
-
-    <section>
-      <div class="section-title"><h2>Очередь</h2><span>последние 200 задач</span></div>
-      <div class="table-wrap">
-        <table>
-          <thead><tr><th>Статус</th><th>Организация</th><th>org_id</th><th>Попытки</th><th>Ошибка</th></tr></thead>
-          <tbody id="tasksBody"><tr><td colspan="5" class="empty-row">Очередь ещё не создана</td></tr></tbody>
-        </table>
+      <div class="run-controls" aria-label="Управление заданием">
+        <button type="button" id="btnPause" class="button secondary">Пауза</button>
+        <button type="button" id="btnResume" class="button secondary">Продолжить</button>
+        <button type="button" id="btnRetry" class="button secondary">Повторить ошибки</button>
+        <span class="controls-divider"></span>
+        <button type="button" id="btnStop" class="button danger">Остановить</button>
+        <button type="button" id="btnForceReset" class="button danger" title="Закрыть рабочие вкладки и удалить очередь с результатами досбора">Сбросить досбор</button>
+        <button type="button" id="btnExport" class="button export">XLSX с деталями</button>
       </div>
+    </section>
+
+    <section class="workspace-grid">
+      <div class="queue-panel">
+        <div class="section-head">
+          <div>
+            <p class="card-kicker">Операционный журнал</p>
+            <h2>Очередь</h2>
+          </div>
+          <div class="queue-meta">
+            <span class="legend-item"><i class="legend-dot success"></i>готово</span>
+            <span class="legend-item"><i class="legend-dot active"></i>в работе</span>
+            <span class="legend-item"><i class="legend-dot error"></i>ошибка</span>
+            <span class="rows-note">последние 200 задач</span>
+          </div>
+        </div>
+
+        <div class="table-wrap">
+          <table>
+            <caption>Последние задачи очереди досбора</caption>
+            <thead>
+              <tr>
+                <th scope="col">Статус</th>
+                <th scope="col">Организация</th>
+                <th scope="col">org_id</th>
+                <th scope="col">Попытки</th>
+                <th scope="col">Ошибка</th>
+              </tr>
+            </thead>
+            <tbody id="tasksBody">
+              <tr><td colspan="5" class="empty-row"><span class="empty-icon">↳</span>Очередь ещё не создана</td></tr>
+            </tbody>
+          </table>
+        </div>
+      </div>
+
+      <aside class="workers-panel">
+        <div class="section-head workers-head">
+          <div>
+            <p class="card-kicker">Исполнители</p>
+            <h2>Рабочие вкладки</h2>
+          </div>
+          <span class="live-chip"><i></i> live</span>
+        </div>
+        <p id="baseCount" class="base-count">0 объектов в базовом сборе</p>
+        <div id="workersList" class="workers empty">Нет запущенных вкладок</div>
+        <div class="workers-hint">
+          <span class="hint-mark">i</span>
+          <p>Карточки открываются в отдельных неактивных вкладках. При CAPTCHA откройте проблемную вкладку вручную.</p>
+        </div>
+      </aside>
     </section>
   </main>
+
   <script src="xlsx.full.min.js"></script>
   <script src="enrichment.js"></script>
 </body>

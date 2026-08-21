@@ -5,6 +5,12 @@
   const SESSION_KEY = "maps_export_session_v2";
   const JOB_KEY = "maps_export_enrichment_job_v1";
   const RESULTS_KEY = "maps_export_enrichment_results_v1";
+  const THEME_KEY = "maps_export_ui_theme_v1";
+  const LEGACY_THEME_KEY = "maps_export_enrichment_theme_v1";
+  const THEME_IDS = new Set([
+    "theme-dark", "theme-gis", "theme-mission", "theme-bloomberg", "theme-linear",
+    "theme-blueprint", "theme-scada", "theme-neon", "theme-light"
+  ]);
   const $ = (id) => document.getElementById(id);
   let lastState = null;
   let refreshTimer = null;
@@ -41,7 +47,92 @@
 
   function setStatus(text, isError = false) {
     $("statusText").textContent = text || "";
-    $("statusText").style.color = isError ? "var(--danger)" : "";
+    $("statusText").style.color = isError ? "var(--red)" : "";
+  }
+
+  function initThemePreferences() {
+    let savedTheme = "theme-dark";
+    try {
+      const stored = localStorage.getItem(THEME_KEY) || localStorage.getItem(LEGACY_THEME_KEY);
+      if (THEME_IDS.has(stored)) savedTheme = stored;
+    } catch {}
+
+    const savedRadio = $(savedTheme);
+    if (savedRadio) savedRadio.checked = true;
+    const drawerToggle = $("themeDrawerToggle");
+    const drawer = document.querySelector(".theme-drawer");
+    const toggle = document.querySelector(".theme-toggle");
+
+    const syncThemeAccessibility = () => {
+      for (const themeId of THEME_IDS) {
+        const option = document.querySelector(`.theme-option[for="${themeId}"]`);
+        option?.setAttribute("aria-checked", String($(themeId)?.checked === true));
+      }
+    };
+    const applyTheme = (themeId) => {
+      if (!THEME_IDS.has(themeId)) return;
+      const radio = $(themeId);
+      if (radio) radio.checked = true;
+      syncThemeAccessibility();
+    };
+    const syncDrawerAccessibility = () => {
+      const open = drawerToggle?.checked === true;
+      toggle?.setAttribute("aria-expanded", String(open));
+      drawer?.setAttribute("aria-hidden", String(!open));
+    };
+    const activateFromKeyboard = (element) => {
+      element?.addEventListener("keydown", (event) => {
+        if (event.key !== "Enter" && event.key !== " ") return;
+        event.preventDefault();
+        element.click();
+      });
+    };
+
+    activateFromKeyboard(toggle);
+    activateFromKeyboard(document.querySelector(".theme-close"));
+    for (const themeId of THEME_IDS) {
+      const radio = $(themeId);
+      const option = document.querySelector(`.theme-option[for="${themeId}"]`);
+      activateFromKeyboard(option);
+      radio?.addEventListener("change", () => {
+        if (!radio.checked) return;
+        try { localStorage.setItem(THEME_KEY, themeId); } catch {}
+        api.storage.local.set({ [THEME_KEY]: themeId }).catch(() => {});
+        if (drawerToggle) drawerToggle.checked = false;
+        syncThemeAccessibility();
+        syncDrawerAccessibility();
+        toggle?.focus();
+      });
+    }
+    drawerToggle?.addEventListener("change", () => {
+      syncDrawerAccessibility();
+      if (drawerToggle.checked) {
+        const selectedId = Array.from(THEME_IDS).find((themeId) => $(themeId)?.checked) || "theme-dark";
+        const selected = document.querySelector(`.theme-option[for="${selectedId}"]`);
+        setTimeout(() => selected?.focus(), 0);
+      }
+    });
+    document.addEventListener("keydown", (event) => {
+      if (event.key !== "Escape" || !drawerToggle?.checked) return;
+      drawerToggle.checked = false;
+      syncDrawerAccessibility();
+      toggle?.focus();
+    });
+    syncThemeAccessibility();
+    syncDrawerAccessibility();
+    api.storage.local.get(THEME_KEY).then((stored) => {
+      const shared = stored?.[THEME_KEY];
+      if (THEME_IDS.has(shared)) applyTheme(shared);
+      else {
+        const selected = Array.from(THEME_IDS).find((themeId) => $(themeId)?.checked) || savedTheme;
+        api.storage.local.set({ [THEME_KEY]: selected }).catch(() => {});
+      }
+    }).catch(() => {});
+    return applyTheme;
+  }
+
+  function selectedSource() {
+    return $("detailSource")?.value === "2gis" ? "2gis" : "yandex";
   }
 
   function formatDuration(minutes) {
@@ -96,6 +187,10 @@
   function render(state) {
     lastState = state;
     const job = state.job;
+    const jobLocked = ["running", "paused"].includes(job.status);
+    if (jobLocked && ["yandex", "2gis"].includes(job.source)) $("detailSource").value = job.source;
+    const source = jobLocked ? job.source : selectedSource();
+    const sourceBaseCount = Number(state.base_counts?.[source] ?? state.base_count ?? 0);
     const totals = job.totals || {};
     const done = Number(totals.success || 0) + Number(totals.error || 0) + Number(totals.captcha || 0) + Number(totals.rate_limited || 0) + Number(totals.cancelled || 0);
     const total = Number(totals.total || 0);
@@ -106,8 +201,8 @@
 
     document.body.dataset.jobStatus = job.status || "idle";
     $("statusBackdropText").textContent = STATUS_LABELS[job.status] || job.status || "ожидание";
-    $("jobBadge").textContent = STATUS_LABELS[job.status] || job.status;
-    $("jobBadge").className = `badge ${job.status}`;
+    $("jobBadgeText").textContent = STATUS_LABELS[job.status] || job.status;
+    $("jobBadge").className = `job-badge ${job.status}`;
     $("statTotal").textContent = String(total);
     $("statSuccess").textContent = String(totals.success || 0);
     $("statActive").textContent = String(totals.active || 0);
@@ -116,23 +211,35 @@
     $("statEta").textContent = formatDuration(eta);
     $("progressBar").style.width = `${percent}%`;
     $("progressPercent").textContent = `${percent}%`;
+    $("progressTrack").setAttribute("aria-valuenow", String(percent));
+    $("progressTrack").setAttribute("aria-valuetext", total ? `${done} из ${total}` : "Очередь не создана");
     $("progressText").textContent = total ? `\u041e\u0431\u0440\u0430\u0431\u043e\u0442\u0430\u043d\u043e ${done} \u0438з ${total}` : "\u0413\u043e\u0442\u043e\u0432\u043e \u043a \u0437\u0430\u043f\u0443\u0441\u043a\u0443";
-    $("baseCount").textContent = `${state.base_count || 0} \u043e\u0431\u044a\u0435\u043a\u0442\u043e\u0432 \u0432 \u0431\u0430\u0437\u043e\u0432\u043e\u043c \u0441\u0431\u043e\u0440\u0435 \u00b7 ${state.result_count || 0} \u0441 \u0440\u0435\u0437\u0443\u043b\u044c\u0442\u0430\u0442\u043e\u043c`;
+    $("baseCount").textContent = `${sourceBaseCount} объектов ${source === "2gis" ? "2ГИС" : "Яндекса"} в базовом сборе · ${state.result_count || 0} результатов всего`;
+    $("sourceModeHint").textContent = source === "2gis"
+      ? "Отдельная очередь откроет /tab/info в 1–4 неактивных вкладках и прочитает структурированный объект карточки."
+      : "Карточки Яндекса откроются в фоновых вкладках: обзор и вкладка «Особенности».";
+    if (sourceBaseCount && $("statusText").textContent.startsWith("\u0421\u043d\u0430\u0447\u0430\u043b\u0430")) {
+      setStatus("\u0411\u0430\u0437\u043e\u0432\u044b\u0435 URL \u0433\u043e\u0442\u043e\u0432\u044b. \u0412\u044b\u0431\u0435\u0440\u0438\u0442\u0435 \u043f\u0430\u0440\u0430\u043c\u0435\u0442\u0440\u044b \u0438 \u0437\u0430\u043f\u0443\u0441\u0442\u0438\u0442\u0435 \u0434\u043e\u0441\u0431\u043e\u0440.");
+    }
 
-    $("btnStart").disabled = ["running", "paused"].includes(job.status);
+    $("btnStart").disabled = !sourceBaseCount || jobLocked;
+    $("btnStart").title = !sourceBaseCount ? `Сначала зафиксируйте карточки ${source === "2gis" ? "2ГИС" : "Яндекса"} на карте` : "Запустить новую очередь досбора";
+    for (const id of ["detailSource", "scope", "workers", "maxAttempts", "timeout"]) $(id).disabled = jobLocked;
     $("btnPause").disabled = job.status !== "running";
     $("btnResume").disabled = !["paused", "blocked", "stopped"].includes(job.status);
     $("btnStop").disabled = !["running", "paused", "blocked"].includes(job.status);
+    $("btnForceReset").disabled = job.status === "idle" && !total && !state.result_count;
     $("btnRetry").disabled = !(totals.error || totals.captcha || totals.rate_limited);
     $("btnExport").disabled = !state.base_count;
 
     const blockedWorker = job.workers?.find((worker) => ["captcha", "rate_limited"].includes(worker.status));
     $("alert").classList.toggle("hidden", job.status !== "blocked");
     const isRateLimited = blockedWorker?.status === "rate_limited";
-    $("alertTitle").textContent = isRateLimited ? "\u041b\u0438\u043c\u0438\u0442 \u042f\u043d\u0434\u0435\u043a\u0441\u0430" : "CAPTCHA";
-    $("alertText").textContent = job.status === "blocked" ? "\u042f\u043dдекс запросил проверку. Очередь остановлена, данные сохранены." : "";
+    const provider = job.source === "2gis" ? "2ГИС" : "Яндекс";
+    $("alertTitle").textContent = isRateLimited ? `Лимит ${provider}` : "CAPTCHA";
+    $("alertText").textContent = job.status === "blocked" ? `${provider} запросил проверку. Очередь остановлена, данные сохранены.` : "";
     if (job.status === "blocked" && isRateLimited) {
-      $("alertText").textContent = "\u042f\u043d\u0434\u0435\u043a\u0441 \u0432\u0440\u0435\u043c\u0435\u043d\u043d\u043e \u043e\u0433\u0440\u0430\u043d\u0438\u0447\u0438\u043b \u0437\u0430\u0433\u0440\u0443\u0437\u043a\u0443 \u0441\u0442\u0440\u0430\u043d\u0438\u0446. \u041f\u0440\u043e\u0433\u0440\u0435\u0441\u0441 \u0441\u043e\u0445\u0440\u0430\u043d\u0451\u043d; \u043f\u0440\u043e\u0434\u043e\u043b\u0436\u0438\u0442\u0435 \u043f\u043e\u0437\u0436\u0435 \u0438\u043b\u0438 \u0441 \u043c\u0435\u043d\u044c\u0448\u0438\u043c \u0447\u0438\u0441\u043b\u043e\u043c \u0432\u043a\u043b\u0430\u0434\u043e\u043a.";
+      $("alertText").textContent = `${provider} временно ограничил загрузку страниц. Прогресс сохранён; продолжите позже или с меньшим числом вкладок.`;
     }
     $("btnOpenWorker").dataset.workerId = blockedWorker?.worker_id || "";
     renderWorkers(job);
@@ -201,6 +308,28 @@
       .join(" | ");
   }
 
+  function categoryList(value) {
+    const raw = Array.isArray(value) ? value : String(value || "").split(/\s*\|\s*/);
+    const seen = new Set();
+    const technical = new Set([
+      "organization", "localbusiness", "hotel", "lodgingbusiness", "restaurant", "store", "medicalbusiness", "карты"
+    ]);
+    return raw.map((item) => String(item || "").replace(/\s+/g, " ").trim()).filter((item) => {
+      const key = item.toLocaleLowerCase("ru");
+      if (!key || technical.has(key) || seen.has(key)) return false;
+      seen.add(key);
+      return true;
+    });
+  }
+
+  function exportCategories(base, detail) {
+    const baseCategories = categoryList(base?.categories_all);
+    const detailCategories = categoryList(detail?.categories_all || detail?.categories);
+    if (detail?.category_first && detailCategories.length) return detailCategories;
+    if (baseCategories.length) return baseCategories;
+    return detailCategories.slice(0, 1);
+  }
+
   async function exportWorkbook() {
     try {
       setStatus("\u0421обираю XLSX\u2026");
@@ -213,28 +342,35 @@
       const objects = Object.entries(session.objects || {}).map(([objectKey, base]) => {
         const detail = results[objectKey] || {};
         const fields = detail.category_data?.fields || {};
+        const categories = exportCategories(base, detail);
         return {
-          "ID Яндекс": detail.org_id || base.org_id || "",
+          "Источник": base.source || detail.source || "",
+          "ID объекта": detail.org_id || base.org_id || "",
           "Название": detail.title || base.title || "",
-          "Категории": detail.categories?.length ? detail.categories : base.categories_all || "",
+          "categories_all": categories,
+          "category_first": categories[0] || "",
           "Адрес": detail.address || base.address || "",
           "Телефоны": detail.phones || [],
           "Сайты": detail.websites || [],
           "Рейтинг": detail.rating || base.rating || "",
           "Количество отзывов": detail.reviews || base.reviews || "",
           "Количество фотографий": base.photos_count || "",
-          "Широта": base.lat || "",
-          "Долгота": base.lon || "",
+          "Широта": detail.lat || base.lat || "",
+          "Долгота": detail.lon || base.lon || "",
           "URL": publicUrl(detail.url || base.url),
-          "График работы": detail.opening_hours || [],
-          "Статус работы": detail.working_status || "",
-          "Время закрытия": detail.close_time || "",
+          "opening_hours": detail.opening_hours || [],
+          "working_status": detail.working_status || "",
+          "close_time": detail.close_time || "",
           "Описание": detail.description || "",
           "Социальные сети": detail.social_links || [],
           "Средний счёт": fields.average_bill || "",
           "Ценовой уровень": fields.price_level || "",
           "Кухня": fields.cuisine || [],
           "Тип заведения": fields.venue_types || [],
+          "Посадочных мест": fields.seats || "",
+          "Меню": fields.menu || [],
+          "Услуги заведения": fields.services || [],
+          "Способы оплаты": fields.payment_methods || [],
           "Количество звёзд": fields.star_rating || "",
           "Тип гостиницы": fields.hotel_type || "",
           "Количество номеров": fields.room_count || "",
@@ -243,11 +379,18 @@
           "Время заезда": fields.checkin_time || "",
           "Год постройки": fields.construction_year || "",
           "Время выезда": fields.checkout_time || "",
+          "Удобства отеля": fields.amenities || [],
+          "Номер в реестре": fields.registry_number || "",
+          "Ссылка на реестр": fields.registry_url || "",
           "Парковка — характеристики": fields.parking_features || [],
           "Парковка — платная": yesNo(fields.paid),
           "Парковка — охраняемая": yesNo(fields.guarded),
           "Парковка — открытая": yesNo(fields.open_air),
           "Парковка — уличная": yesNo(fields.street),
+          "Парковка — вместимость": fields.capacity || "",
+          "Парковка — доступ": fields.access || "",
+          "Парковка — уровень": fields.level || "",
+          "Парковка — покрытие": fields.paving || "",
           "Все особенности": readableAttributes(detail.category_data?.raw_attributes),
           "Статус досбора": STATUS_LABELS[detail.status] || detail.status || "не обработано",
           "Ошибка досбора": detail.error || ""
@@ -256,12 +399,12 @@
 
       if (!objects.length) throw new Error("\u0412 \u0431\u0430зовой \u0441\u0435\u0441\u0441\u0438\u0438 \u043d\u0435т \u043e\u0431\u044a\u0435\u043a\u0442\u043eв");
       const columns = [
-        "ID Яндекс", "Название", "Категории", "Адрес", "Телефоны", "Сайты", "Рейтинг", "Количество отзывов",
-        "Количество фотографий", "Широта", "Долгота", "URL", "График работы", "Статус работы", "Время закрытия",
-        "Описание", "Социальные сети", "Средний счёт", "Ценовой уровень", "Кухня", "Тип заведения",
+        "Источник", "ID объекта", "Название", "categories_all", "category_first", "Адрес", "Телефоны", "Сайты", "Рейтинг", "Количество отзывов",
+        "Количество фотографий", "Широта", "Долгота", "URL", "opening_hours", "working_status", "close_time",
+        "Описание", "Социальные сети", "Средний счёт", "Ценовой уровень", "Кухня", "Тип заведения", "Посадочных мест", "Меню", "Услуги заведения", "Способы оплаты",
         "Количество звёзд", "Тип гостиницы", "Количество номеров", "Типы номеров", "Цена номера", "Время заезда",
-        "Год постройки", "Время выезда", "Парковка — характеристики", "Парковка — платная", "Парковка — охраняемая",
-        "Парковка — открытая", "Парковка — уличная", "Все особенности", "Статус досбора", "Ошибка досбора"
+        "Год постройки", "Время выезда", "Удобства отеля", "Номер в реестре", "Ссылка на реестр", "Парковка — характеристики", "Парковка — платная", "Парковка — охраняемая",
+        "Парковка — открытая", "Парковка — уличная", "Парковка — вместимость", "Парковка — доступ", "Парковка — уровень", "Парковка — покрытие", "Все особенности", "Статус досбора", "Ошибка досбора"
       ];
 
       const workbook = XLSX.utils.book_new();
@@ -280,8 +423,11 @@
   }
 
   document.addEventListener("DOMContentLoaded", () => {
+    const applyTheme = initThemePreferences();
+    $("detailSource").addEventListener("change", () => lastState && render(lastState));
     $("btnStart").addEventListener("click", () => runAction("ENRICHMENT_START", {
       options: {
+        source: selectedSource(),
         scope: $("scope").value,
         workers: Number($("workers").value),
         max_attempts: Number($("maxAttempts").value),
@@ -295,9 +441,15 @@
     $("btnStop").addEventListener("click", () => {
       if (confirm("\u041e\u0441\u0442\u0430\u043d\u043e\u0432ить досбор и закрыть рабочие вкладки?")) runAction("ENRICHMENT_STOP", {}, "\u0414\u043e\u0441б\u043e\u0440 \u043eстановлен");
     });
+    $("btnForceReset").addEventListener("click", () => {
+      if (confirm("Принудительно закрыть рабочие вкладки и удалить очередь вместе с результатами досбора? Базовые карточки и URL останутся в основной сессии.")) {
+        runAction("ENRICHMENT_FORCE_RESET", {}, "Досбор полностью сброшен. Можно запускать новое задание");
+      }
+    });
     $("btnOpenWorker").addEventListener("click", () => runAction("ENRICHMENT_OPEN_WORKER", { worker_id: $("btnOpenWorker").dataset.workerId }, "\u0412\u043a\u043b\u0430дк\u0430 \u043eткрыта"));
     $("btnExport").addEventListener("click", exportWorkbook);
     api.storage.onChanged.addListener((changes, area) => {
+      if (area === "local" && changes[THEME_KEY]?.newValue) applyTheme(changes[THEME_KEY].newValue);
       if (area === "local" && (changes[JOB_KEY] || changes[RESULTS_KEY] || changes[SESSION_KEY])) {
         clearTimeout(refreshTimer);
         refreshTimer = setTimeout(refresh, 100);

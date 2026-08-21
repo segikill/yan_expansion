@@ -1,0 +1,56 @@
+<!doctype html>
+<html lang="ru">
+<head><meta charset="utf-8"><title>Тест подробного парсера 2ГИС</title></head>
+<body>
+  <script src="../two_gis_detail_parser.js"></script>
+  <script>
+    (() => {
+      const parser = globalThis.Maps2gisDetailParser;
+      const makeDoc = (body, link = "") => new DOMParser().parseFromString(`<html><body>${body.split("\n").map((line) => `<div>${line}</div>`).join("")}${link ? `<a href="${link}">Реестр</a>` : ""}</body></html>`, "text/html");
+      const base = {
+        id: "70000001090062896",
+        name: "Дружба",
+        address_name: "переулок Святителя Иннокентия, 9",
+        point: { lat: 50.258103, lon: 127.524379 },
+        reviews: { general_rating: 4.7, general_review_count: 610 },
+        schedule: { Mon: { working_hours: [{ from: "11:00", to: "24:00" }] } },
+        contact_groups: [{ contacts: [{ type: "phone", value: "+7 999 000-00-00" }, { type: "website", value: "https://example.test" }] }]
+      };
+      const food = parser.parseDocument(makeDoc("Дружба\nИнфо\nЧек 1200 ₽\nДо 80 мест"), "https://2gis.ru/blagoveshensk/firm/70000001090062896/tab/info", {
+        ...base,
+        rubrics: [{ name: "Кафе" }],
+        attribute_groups: [
+          { name: "Ресторан / Кафе", attributes: [{ tag: "food_service_cuisine_chinese", name: "Китайская кухня" }, { tag: "food_service_booking", name: "Заказ столиков" }] },
+          { name: "Меню", attributes: [{ tag: "menu_soups", name: "Супы" }] },
+          { name: "Способы оплаты", attributes: [{ tag: "payment_card", name: "Оплата картой" }] }
+        ]
+      });
+      const registry = "https://tourism.fsa.gov.ru/ru/resorts/hotels/example/about-resort";
+      const hotel = parser.parseDocument(makeDoc("Юбилейная\n3 звезды\nЦена от 3100 ₽\n113 номеров\nРегистрация в реестре\nНомер: С282024016290", registry), "https://2gis.ru/blagoveshensk/firm/7318877675459195/tab/info", {
+        ...base,
+        id: "7318877675459195",
+        name: "Юбилейная",
+        rubrics: [{ name: "Гостиница" }],
+        attribute_groups: [{ name: "Гостиница", attributes: [{ tag: "hotel_wifi", name: "Wi-Fi" }, { tag: "hotel_breakfast", name: "Завтрак" }] }]
+      });
+      const parking = parser.parseDocument(makeDoc("Парковка\nКруглосуточно\nБесплатная\nВместимость\nМест всего\n7\nОбщие\nДоступ\nОбщедоступная\nУровень\nНаземная\nПокрытие\nАсфальт"), "https://2gis.ru/blagoveshensk/geo/70030076643273394/tab/info", {
+        id: "70030076643273394", name: "Парковка", is_paid: false, capacity: 7, access: "Общедоступная", paving_type: "Асфальт",
+        schedule: Object.fromEntries(["Mon", "Tue", "Wed", "Thu", "Fri", "Sat", "Sun"].map((day) => [day, { working_hours: [{ from: "00:00", to: "24:00" }] }]))
+      });
+      const checks = {
+        common_structured_fields: food.rating === "4,7" && food.reviews === "610" && food.address.includes("Иннокентия") && food.opening_hours[0].includes("Понедельник"),
+        food_adapter: food.category_data.adapter_id === "food" && food.category_data.fields.average_bill === "1200 ₽" && food.category_data.fields.seats === "80" && food.category_data.fields.cuisine.includes("Китайская кухня") && food.category_data.fields.menu.includes("Супы"),
+        hotel_adapter: hotel.category_data.adapter_id === "hotel" && hotel.category_data.fields.star_rating === "3" && hotel.category_data.fields.room_count === "113" && hotel.category_data.fields.room_price === "от 3100 ₽" && hotel.category_data.fields.registry_number === "С282024016290" && hotel.category_data.fields.registry_url === registry,
+        parking_adapter: parking.category_data.adapter_id === "parking" && parking.category_data.fields.paid === false && parking.category_data.fields.capacity === "7" && parking.category_data.fields.access === "Общедоступная" && parking.category_data.fields.level === "Наземная" && parking.category_data.fields.paving === "Асфальт" && parking.working_status === "Открыто круглосуточно",
+        raw_attributes_preserved: food.category_data.raw_attributes.food_service_cuisine_chinese === "Китайская кухня"
+      };
+      const passed = Object.values(checks).every(Boolean);
+      document.documentElement.dataset.testResult = passed ? "PASS" : "FAIL";
+      const output = document.createElement("pre");
+      output.id = "test-output";
+      output.textContent = JSON.stringify({ passed, checks, food, hotel, parking }, null, 2);
+      document.body.appendChild(output);
+    })();
+  </script>
+</body>
+</html>

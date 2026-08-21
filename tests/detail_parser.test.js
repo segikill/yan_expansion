@@ -1,5 +1,5 @@
 (function runDetailParserTest() {
-  function fixture({ type = "LocalBusiness", name, category, features }) {
+  function fixture({ type = "LocalBusiness", name, category, features, status = "", schedule = "" }) {
     const doc = document.implementation.createHTMLDocument(name);
     doc.head.innerHTML = `<script type="application/ld+json">${JSON.stringify({
       "@context": "https://schema.org",
@@ -8,8 +8,11 @@
       category
     })}<\/script>`;
     doc.body.innerHTML = `
+      <nav><span class="breadcrumbs-view__breadcrumb">Карты</span><span class="breadcrumbs-view__breadcrumb">Ставрополь</span></nav>
       <h1 class="orgpage-header-view__header">${name}</h1>
       <div class="business-categories-view__category">${category}</div>
+      <div class="business-working-status-view">${status}</div>
+      <div class="schedule-fixture">${schedule}</div>
       <div class="business-features-view">${features}</div>`;
     return doc;
   }
@@ -31,6 +34,8 @@
     type: "Hotel",
     name: "Центральный",
     category: "Гостиница",
+    status: "Открыто до 19:00",
+    schedule: "Понедельник 08:00–19:00 | Вторник 08:00–19:00 | Среда 08:00–19:00 | Четверг 08:00–19:00 | Пятница 08:00–19:00 | Суббота 10:00–17:00 | Воскресенье 10:00–17:00",
     features: valued("Количество звёзд", "3") + valued("Тип гостиницы", "бизнес-отель") + valued("Номеров", "85") +
       valued("Цена номера (час)", "3200–10900 ₽") + valued("Время заезда", "14:00") + valued("Дата постройки", "2016") + valued("Время выезда", "12:00")
   }), "https://yandex.ru/maps/org/tsentralny/114820473902/?tab=features");
@@ -39,6 +44,14 @@
     category: "Автомобильная парковка",
     features: valued("Парковка", "неохраняемая, открытая, уличная, бесплатная")
   }), "https://yandex.ru/maps/org/avtomobilnaya_parkovka/63212781665/?tab=features");
+  const lateFood = globalThis.MapsDetailParser.parseDocument(fixture({
+    type: "Restaurant",
+    name: "Позднее кафе",
+    category: "Кафе",
+    status: "Открыто до 00:00",
+    schedule: "Понедельник 11:00–00:00 | Вторник 11:00–00:00",
+    features: ""
+  }), "https://yandex.ru/maps/org/late_food/9988776655/");
 
   const checks = {
     base_org_id: base.org_id === "1234567890",
@@ -48,8 +61,12 @@
     base_rating: base.rating === "4,8",
     base_reviews: base.reviews === "123",
     base_adapter: base.category_data.adapter_id === "hotel",
+    base_categories_clean: JSON.stringify(base.categories) === JSON.stringify(["Гостиница"]),
+    base_categories_all: JSON.stringify(base.categories_all) === JSON.stringify(["Гостиница"]),
+    base_category_first: base.category_first === "Гостиница",
     base_room_count: base.category_data.fields.room_count === 48,
     food_adapter: food.category_data.adapter_id === "food",
+    food_categories_clean: JSON.stringify(food.categories) === JSON.stringify(["Ресторан"]),
     average_bill: food.category_data.fields.average_bill === "700–1500 ₽",
     price_level: food.category_data.fields.price_level === "выше среднего",
     cuisine: food.category_data.fields.cuisine.length === 2,
@@ -61,6 +78,12 @@
     hotel_checkin: hotel.category_data.fields.checkin_time === "14:00",
     hotel_year: hotel.category_data.fields.construction_year === 2016,
     hotel_checkout: hotel.category_data.fields.checkout_time === "12:00",
+    hotel_opening_hours: hotel.opening_hours.includes("Понедельник 08:00–19:00"),
+    hotel_working_status: hotel.working_status === "Открыто до 19:00",
+    hotel_close_time: hotel.close_time === "19:00",
+    midnight_opening_hours: lateFood.opening_hours.includes("Понедельник 11:00–00:00"),
+    midnight_working_status: lateFood.working_status === "Открыто до 00:00",
+    midnight_close_time: lateFood.close_time === "00:00",
     parking_adapter: parking.category_data.adapter_id === "parking",
     parking_free: parking.category_data.fields.paid === false,
     parking_unguarded: parking.category_data.fields.guarded === false,

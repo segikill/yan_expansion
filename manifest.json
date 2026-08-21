@@ -1,7 +1,7 @@
 {
   "manifest_version": 3,
   "name": "Maps Export Overlay: Yandex, Google, 2GIS",
-  "version": "1.10.0",
+  "version": "1.12.3",
   "description": "Сбор объектов с карт и досбор подробных данных по URL в фоновых вкладках.",
   "icons": {
     "16": "icon.png",
@@ -19,54 +19,36 @@
     "default_popup": "popup.html"
   },
   "background": {
-    "scripts": ["background.js"],
     "service_worker": "background.js"
   },
   "permissions": [
     "scripting",
-    "activeTab",
     "storage",
     "unlimitedStorage",
-    "tabs",
     "alarms"
   ],
   "host_permissions": [
-    "*://yandex.ru/maps/*",
-    "*://*.yandex.ru/maps/*",
-    "*://ya.ru/maps/*",
-    "*://*.ya.ru/maps/*",
-    "*://yandex.com/maps/*",
-    "*://*.yandex.com/maps/*",
-    "*://google.com/maps/*",
-    "*://*.google.com/maps/*",
-    "*://2gis.ru/*",
-    "*://*.2gis.ru/*",
-    "*://2gis.com/*",
-    "*://*.2gis.com/*",
-    "*://catalog.api.2gis.com/*",
-    "*://*.api.2gis.com/*"
+    "https://*.yandex.ru/maps/*",
+    "https://*.ya.ru/maps/*",
+    "https://*.yandex.com/maps/*",
+    "https://*.google.com/maps/*",
+    "https://maps.google.com/*",
+    "https://*.2gis.ru/*",
+    "https://*.2gis.com/*"
   ],
   "content_scripts": [
     {
       "matches": [
-        "*://yandex.ru/maps/*",
-        "*://*.yandex.ru/maps/*",
-        "*://ya.ru/maps/*",
-        "*://*.ya.ru/maps/*",
-        "*://yandex.com/maps/*",
-        "*://*.yandex.com/maps/*",
-        "*://2gis.ru/*",
-        "*://*.2gis.ru/*",
-        "*://2gis.com/*",
-        "*://*.2gis.com/*"
+        "https://*.yandex.ru/maps/*",
+        "https://*.ya.ru/maps/*",
+        "https://*.yandex.com/maps/*",
+        "https://*.2gis.ru/*",
+        "https://*.2gis.com/*"
       ],
       "exclude_matches": [
-        "*://yandex.ru/maps/org/*",
-        "*://*.yandex.ru/maps/org/*",
-        "*://ya.ru/maps/org/*",
-        "*://*.ya.ru/maps/org/*",
-        "*://yandex.com/maps/org/*",
-        "*://*.yandex.com/maps/org/*"
+        "https://*.yandex.ru/maps/org/*",
+        "https://*.ya.ru/maps/org/*",
+        "https://*.yandex.com/maps/org/*"
       ],
       "js": [
         "xlsx.full.min.js",
@@ -77,16 +59,24 @@
     },
     {
       "matches": [
-        "*://yandex.ru/maps/org/*",
-        "*://*.yandex.ru/maps/org/*",
-        "*://ya.ru/maps/org/*",
-        "*://*.ya.ru/maps/org/*",
-        "*://yandex.com/maps/org/*",
-        "*://*.yandex.com/maps/org/*"
+        "https://*.yandex.ru/maps/org/*",
+        "https://*.ya.ru/maps/org/*",
+        "https://*.yandex.com/maps/org/*"
       ],
       "js": [
         "detail_parser.js",
         "detail_content.js"
+      ],
+      "run_at": "document_idle"
+    },
+    {
+      "matches": [
+        "https://*.2gis.ru/*",
+        "https://*.2gis.com/*"
+      ],
+      "js": [
+        "two_gis_detail_parser.js",
+        "two_gis_detail_content.js"
       ],
       "run_at": "document_idle"
     },
@@ -107,10 +97,15 @@
     {
       "resources": [
         "sniffer.js",
-        "interceptor.js"
+        "interceptor.js",
+        "two_gis_detail_bridge.js"
       ],
       "matches": [
-        "*://*/*"
+        "https://*.yandex.ru/*",
+        "https://*.ya.ru/*",
+        "https://*.yandex.com/*",
+        "https://*.2gis.ru/*",
+        "https://*.2gis.com/*"
       ]
     }
   ]

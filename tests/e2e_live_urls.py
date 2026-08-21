@@ -137,7 +137,7 @@ def inspect_export(path: Path, expected_rows: int) -> dict:
         sheet = workbook["Организации"] if "Организации" in workbook.sheetnames else None
         rows = max(0, (sheet.max_row if sheet else 0) - 1)
         headers = [str(cell.value or "") for cell in next(sheet.iter_rows())] if sheet else []
-        required_columns = {"Название", "Телефоны", "График работы", "Средний счёт", "Количество номеров", "Парковка — характеристики"}
+        required_columns = {"Название", "Телефоны", "categories_all", "category_first", "opening_hours", "working_status", "close_time", "Средний счёт", "Количество номеров", "Парковка — характеристики"}
         missing_columns = sorted(required_columns.difference(headers))
         forbidden_columns = {"object_key", "source", "snapshot_ids", "assigned_worker", "category_fields_json"}
         present_forbidden = sorted(forbidden_columns.intersection(headers))
