@@ -1,8 +1,10 @@
 # Maps Export Overlay
 
-Расширение для тех, кому нужен список организаций с карты в Excel. Например, можно найти гостиницы в нужном районе и выгрузить их названия, адреса, координаты и ссылки.
+Браузерное расширение для сбора организаций с карт в Excel. Например, можно найти гостиницы в нужном районе и выгрузить их названия, адреса, координаты и ссылки.
 
-[Скачать ZIP](https://github.com/segikill/yan_expansion/releases/download/v1.12.4/maps-export-overlay-1.12.4-private.zip) · [Все релизы](https://github.com/segikill/yan_expansion/releases)
+[![Скачать расширение](https://img.shields.io/badge/Скачать-расширение-blue?style=for-the-badge&logo=github)](https://github.com/segikill/yan_expansion/releases)
+
+[Скачать ZIP версии 1.12.4](https://github.com/segikill/yan_expansion/releases/download/v1.12.4/maps-export-overlay-1.12.4-private.zip)
 
 ## Установка
 
