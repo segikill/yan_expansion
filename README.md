@@ -1,5 +1,7 @@
 # Maps Export Overlay
 
+**Источники данных** · Яндекс Карты · Google Maps · 2ГИС
+
 Браузерное расширение для сбора организаций с карт в Excel. Например, можно найти гостиницы в нужном районе и выгрузить их названия, адреса, координаты и ссылки.
 
 [![Скачать расширение](https://img.shields.io/badge/Скачать-расширение-blue?style=for-the-badge&logo=github)](https://github.com/segikill/yan_expansion/releases)
