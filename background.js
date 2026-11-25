@@ -140,7 +140,7 @@
   }
 
   function publicState(job, resultCount, baseCount, savedCounts) {
-    return { job, result_count: resultCount, base_count: baseCount.total, base_counts: baseCount, saved_counts: savedCounts, controller_version: "1.12.8" };
+    return { job, result_count: resultCount, base_count: baseCount.total, base_counts: baseCount, saved_counts: savedCounts, controller_version: "1.12.10" };
   }
 
   async function getState() {
@@ -704,9 +704,61 @@
     return { ok: true, tab_id: tab.id };
   }
 
-  async function openWorker(workerId) {
+  function workerWindowBounds(area) {
+    const { left, top, width, height } = area || {};
+    if (![left, top, width, height].every(Number.isInteger) ||
+        width < 520 || height < 320 || width > 32768 || height > 32768) return [];
+    const gap = 12;
+    const tileWidth = 520;
+    const tileHeight = 320;
+    const columns = Math.floor((width + gap) / (tileWidth + gap));
+    const rows = Math.floor((height + gap) / (tileHeight + gap));
+    return Array.from({ length: Math.min(8, columns * rows) }, (_, index) => ({
+      left: left + (index % columns) * (tileWidth + gap),
+      top: top + Math.floor(index / columns) * (tileHeight + gap),
+      width: tileWidth,
+      height: tileHeight
+    }));
+  }
+
+  async function arrangeWorkerWindows(area, sender) {
+    if (sender.url?.split(/[?#]/)[0] !== api.runtime.getURL("enrichment.html")) {
+      throw new Error("Раскладка доступна из окна досбора.");
+    }
+    const bounds = workerWindowBounds(area);
+    if (!bounds.length) throw new Error("На этом экране недостаточно места для рабочего окна.");
+    // Read the queue only. Moving tabs keeps their IDs and in-flight work.
     const job = await loadJob();
-    const worker = job.workers.find((item) => item.worker_id === workerId) || job.workers.find((item) => ["captcha", "rate_limited"].includes(item.status));
+    const tabs = job.workers.map((worker) => worker.tab_id).filter(Number.isInteger);
+    if (!tabs.length) throw new Error("Сначала запустите досбор.");
+    let arranged = 0;
+    let skipped = 0;
+    for (const tabId of tabs) {
+      if (arranged >= bounds.length) break;
+      try {
+        const current = await api.tabs.get(tabId);
+        const window = await api.windows.get(current.windowId, { populate: true });
+        const slot = bounds[arranged];
+        if (window.type === "popup" && window.tabs?.length === 1) {
+          await api.windows.update(window.id, { state: "normal" });
+          await api.windows.update(window.id, { ...slot, focused: true });
+        } else {
+          await api.windows.create({ ...slot, tabId, type: "popup", focused: true });
+        }
+        arranged++;
+      } catch {
+        skipped++;
+      }
+    }
+    return { ok: true, arranged, background: tabs.length - arranged - skipped, skipped };
+  }
+
+  async function openWorker(workerId, objectKey) {
+    const job = await loadJob();
+    const worker = workerId
+      ? job.workers.find((item) => item.worker_id === workerId)
+      : job.workers.find((item) => ["captcha", "rate_limited"].includes(item.status));
+    if (objectKey && worker?.current_object_key !== objectKey) throw new Error("Эта вкладка уже обрабатывает другую карточку.");
     if (!worker?.tab_id) throw new Error("\u0420\u0430\u0431\u043e\u0447\u0430\u044f \u0432\u043a\u043b\u0430\u0434\u043a\u0430 \u043d\u0435 \u043d\u0430\u0439\u0434\u0435\u043d\u0430");
     await api.tabs.update(worker.tab_id, { active: true });
     return { ok: true };
@@ -733,7 +785,8 @@
         }
         return openDashboard(sourceTab);
       }
-      case "ENRICHMENT_OPEN_WORKER": return openWorker(message.worker_id);
+      case "ENRICHMENT_ARRANGE_WINDOWS": return arrangeWorkerWindows(message.area, sender);
+      case "ENRICHMENT_OPEN_WORKER": return openWorker(message.worker_id, message.object_key);
       case "ENRICHMENT_WORKER_READY":
         if (sender?.tab?.id) await dispatchForTab(sender.tab.id, true);
         return { ok: true };

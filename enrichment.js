@@ -162,6 +162,7 @@
   }
 
   let checkingWorkerTabs = false;
+  let arrangingWorkerWindows = false;
   async function updateWorkerDiagnostics() {
     for (const element of $("workersList").querySelectorAll("[data-stage-started]")) {
       element.textContent = workerStageTime(Number(element.dataset.stageStarted));
@@ -186,11 +187,13 @@
 
   function renderWorkers(job) {
     const root = $("workersList");
+    $("btnArrangeWorkers").disabled = arrangingWorkerWindows || !job.workers?.some((worker) => Number.isInteger(worker.tab_id));
     if (!job.workers?.length) {
       root.className = "workers empty";
       root.textContent = "\u041d\u0435\u0442 \u0437\u0430\u043f\u0443\u0449\u0435\u043d\u043d\u044b\u0445 \u0432\u043a\u043b\u0430\u0434\u043e\u043a";
       return;
     }
+    const focusedWorker = root.contains(document.activeElement) ? document.activeElement.dataset.openWorker : "";
     root.className = "workers";
     root.innerHTML = job.workers.map((worker) => {
       const task = job.tasks?.[worker.current_object_key];
@@ -201,14 +204,21 @@
       const tabId = Number.isInteger(worker.tab_id) ? worker.tab_id : null;
       return `<article class="worker">
         <div class="worker-head"><strong>${escapeHtml(worker.worker_id)}</strong><span class="worker-state">${escapeHtml(workerState)}</span></div>
-        <div class="worker-title">${escapeHtml(task?.title || (worker.status === "idle" ? "\u041e\u0436\u0438\u0434\u0430ет задачу" : ""))}</div>
+        <div class="worker-title">${escapeHtml(task?.title || (task?.org_id ? `Карточка ${task.org_id}` : "") || (worker.status === "idle" ? "\u041e\u0436\u0438\u0434\u0430ет задачу" : ""))}</div>
         <div class="worker-diagnostics">
           <small>На этапе <span data-stage-started="${startedAt}">${workerStageTime(startedAt)}</span></small>
           <small ${tabId == null ? "" : `data-worker-tab="${tabId}"`}>${tabId == null ? "Вкладка не открыта" : "Проверяю состояние…"}</small>
         </div>
+        <button type="button" class="button secondary worker-open"
+          data-open-worker="${escapeHtml(worker.worker_id)}" data-object-key="${escapeHtml(task?.object_key || "")}"
+          ${!task || tabId == null ? "disabled" : ""}>Открыть карточку</button>
         <small>\u0413\u043e\u0442\u043e\u0432\u043e: ${Number(worker.processed || 0)}${worker.tab_id ? ` \u00b7 tab ${worker.tab_id}` : ""}</small>
       </article>`;
     }).join("");
+    if (focusedWorker) {
+      const button = Array.from(root.querySelectorAll("[data-open-worker]")).find((item) => item.dataset.openWorker === focusedWorker && !item.disabled);
+      (button || $("workersModal").querySelector("form button")).focus();
+    }
     void updateWorkerDiagnostics();
   }
 
@@ -633,6 +643,53 @@
 
   document.addEventListener("DOMContentLoaded", () => {
     setInterval(updateWorkerDiagnostics, 1000);
+    const workersModal = $("workersModal");
+    $("btnWorkersModal").addEventListener("click", () => {
+      $("workersModalStatus").hidden = true;
+      $("workersModalBody").append($("workersList"));
+      workersModal.showModal();
+    });
+    $("btnArrangeWorkers").addEventListener("click", async () => {
+      arrangingWorkerWindows = true;
+      $("btnArrangeWorkers").disabled = true;
+      const message = $("workersModalStatus");
+      message.hidden = false;
+      message.textContent = "Раскладываю рабочие окна…";
+      try {
+        const area = {
+          left: Math.round(screen.availLeft ?? 0),
+          top: Math.round(screen.availTop ?? 0),
+          width: Math.round(screen.availWidth),
+          height: Math.round(screen.availHeight)
+        };
+        const result = await send("ENRICHMENT_ARRANGE_WINDOWS", { area });
+        message.textContent = `Разложено: ${result.arranged} · в фоне: ${result.background}` +
+          (result.skipped ? ` · не удалось переместить: ${result.skipped}` : "");
+      } catch (error) {
+        message.textContent = String(error?.message || error);
+      } finally {
+        arrangingWorkerWindows = false;
+        await refresh();
+      }
+    });
+    workersModal.addEventListener("close", () => {
+      $("workersInline").append($("workersList"));
+    });
+    $("workersList").addEventListener("click", async (event) => {
+      const button = event.target.closest("[data-open-worker]");
+      if (!button || button.disabled) return;
+      const message = $("workersModalStatus");
+      message.hidden = true;
+      try {
+        await send("ENRICHMENT_OPEN_WORKER", {
+          worker_id: button.dataset.openWorker,
+          object_key: button.dataset.objectKey
+        });
+      } catch (error) {
+        message.textContent = String(error?.message || error);
+        message.hidden = false;
+      }
+    });
     const applyTheme = initThemePreferences();
     $("detailSource").addEventListener("change", () => lastState && render(lastState));
     $("xlsxFile").addEventListener("change", loadInputWorkbook);

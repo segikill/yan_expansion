@@ -1,7 +1,7 @@
 {
   "manifest_version": 3,
   "name": "Maps Export Overlay: Yandex, Google, 2GIS",
-  "version": "1.12.8",
+  "version": "1.12.10",
   "description": "Сбор объектов с карт и досбор подробных данных по URL в фоновых вкладках.",
   "icons": {
     "16": "icons/icon-16.png",

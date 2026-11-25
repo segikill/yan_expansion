@@ -97,7 +97,7 @@
         <div>
           <div class="product-line">
             <span class="product-name">Maps Export</span>
-            <span class="version">1.12.8</span>
+            <span class="version">1.12.10</span>
           </div>
           <h1>Досбор данных по URL</h1>
           <p class="subtitle">Второй этап сбора: открытие карточек, получение деталей и локальное сохранение результата.</p>
@@ -312,10 +312,12 @@
             <p class="card-kicker">Исполнители</p>
             <h2>Рабочие вкладки</h2>
           </div>
-          <span class="live-chip"><i></i> live</span>
+          <button type="button" id="btnWorkersModal" class="button secondary" aria-haspopup="dialog">Развернуть</button>
         </div>
         <p id="baseCount" class="base-count">0 объектов в базовом сборе</p>
-        <div id="workersList" class="workers empty">Нет запущенных вкладок</div>
+        <div id="workersInline">
+          <div id="workersList" class="workers empty">Нет запущенных вкладок</div>
+        </div>
         <div class="workers-hint">
           <span class="hint-mark">i</span>
           <p>Карточки открываются в отдельных неактивных вкладках. При CAPTCHA откройте проблемную вкладку вручную.</p>
@@ -323,6 +325,18 @@
       </aside>
     </section>
   </main>
+
+  <dialog id="workersModal" class="workers-modal" aria-labelledby="workersModalTitle">
+    <header class="workers-modal-head">
+      <h1 id="workersModalTitle">Рабочие вкладки</h1>
+      <div class="workers-modal-actions">
+        <button type="button" id="btnArrangeWorkers" class="button secondary" disabled>Разложить рабочие окна</button>
+        <form method="dialog"><button class="button secondary" autofocus>Закрыть</button></form>
+      </div>
+    </header>
+    <div id="workersModalBody"></div>
+    <p id="workersModalStatus" role="status" hidden></p>
+  </dialog>
 
   <script src="xlsx.full.min.js"></script>
   <script src="enrichment.js"></script>
