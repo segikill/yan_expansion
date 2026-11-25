@@ -97,7 +97,7 @@
         <div>
           <div class="product-line">
             <span class="product-name">Maps Export</span>
-            <span class="version">1.12.4</span>
+            <span class="version">1.12.5</span>
           </div>
           <h1>Досбор данных по URL</h1>
           <p class="subtitle">Второй этап сбора: открытие карточек, получение деталей и локальное сохранение результата.</p>
@@ -163,11 +163,7 @@
 
         <label class="field" for="workers">
           <span>Вкладок</span>
-          <select id="workers">
-            <option value="1">1</option>
-            <option value="2" selected>2</option>
-            <option value="4">4</option>
-          </select>
+          <input id="workers" type="number" min="1" max="8" step="1" value="2" required >
         </label>
 
         <label class="field" for="maxAttempts">

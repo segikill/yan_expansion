@@ -17,9 +17,7 @@
   const OBJECT_COLS = [
     "object_key", "source", "org_id", "title", "rating", "reviews",
     "categories_all", "address", "photos_count",
-    "lat", "lon", "url", "scraped_at",
-    "first_snapshot_id", "last_snapshot_id", "snapshot_ids", "seen_count",
-    "first_seen_at", "last_seen_at"
+    "lat", "lon", "url"
   ];
 
   let session = emptySession();

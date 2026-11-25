@@ -44,20 +44,26 @@
   }
 
   async function openFeaturesTab() {
-    if (document.querySelector(".business-features-view._view_tab") || new URL(location.href).searchParams.get("tab") === "features") {
-      return true;
-    }
+    const panelSelector = ".business-features-view._view_tab";
     const control = document.querySelector(".tabs-select-view__title._name_features");
-    if (!control) return false;
-    try { control.click(); } catch { return false; }
+    const alreadyOpened = document.querySelector(panelSelector) ||
+      new URL(location.href).searchParams.get("tab") === "features";
+    if (!alreadyOpened && !control) return false;
+    if (!alreadyOpened) control.click();
+
+    let previousState = "";
     for (let attempt = 0; attempt < 24; attempt += 1) {
-      if (document.querySelector(".business-features-view._view_tab") || new URL(location.href).searchParams.get("tab") === "features") {
-        await sleep(250);
-        return true;
-      }
+      const panel = document.querySelector(panelSelector);
+      const rows = panel?.querySelectorAll(".business-features-view__valued, .business-features-view__bool-item, [class*='business-features-view__feature'], [class*='business-features-view__group'] li");
+      const text = Array.from(rows || [], (row) => row.textContent.trim()).filter(Boolean).join("\n");
+      const emptyNotice = panel?.querySelector(".business-features-view__empty")?.textContent.trim();
+      const state = text ? `rows:${text}` : emptyNotice ? `empty:${emptyNotice}` : "";
+      const ready = state && panel.getAttribute("aria-busy") !== "true";
+      if (ready && state === previousState) return Boolean(text);
+      previousState = ready ? state : "";
       await sleep(250);
     }
-    return false;
+    throw new Error("Раздел «Особенности» не загрузился за отведённое время");
   }
 
   function mergeParseResults(overview, features) {
@@ -123,8 +129,8 @@
     await expandCardSections();
     const startedAt = Date.now();
     const overviewResult = parser.parseDocument(document, location.href);
-    await openFeaturesTab();
-    const featureResult = parser.parseDocument(document, location.href);
+    const featuresReady = await openFeaturesTab();
+    const featureResult = featuresReady ? parser.parseDocument(document, location.href) : overviewResult;
     const result = mergeParseResults(overviewResult, featureResult);
     if (!result.title && !result.address) throw new Error("\u0412 \u043a\u0430\u0440\u0442\u043e\u0447\u043a\u0435 \u043d\u0435 \u043d\u0430\u0439\u0434\u0435\u043d\u044b \u043e\u0441\u043d\u043e\u0432\u043d\u044b\u0435 \u043f\u043e\u043b\u044f");
     result.duration_ms = Date.now() - startedAt;

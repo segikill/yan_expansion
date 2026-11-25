@@ -4,9 +4,7 @@ const ENRICHMENT_RESULTS_KEY = "maps_export_enrichment_results_v1";
 const OBJECT_COLS = [
   "object_key", "source", "org_id", "title", "rating", "reviews",
   "categories_all", "address", "photos_count",
-  "lat", "lon", "url", "scraped_at",
-  "first_snapshot_id", "last_snapshot_id", "snapshot_ids", "seen_count",
-  "first_seen_at", "last_seen_at"
+  "lat", "lon", "url"
 ];
 
 const $ = (id) => document.getElementById(id);
@@ -228,7 +226,60 @@ async function clearSession() {
   await refreshStats();
 }
 
+const RELEASE_CACHE_KEY = "maps_export_release_check_v1";
+const RELEASE_REPO = "segikill/yan_expansion";
+const RELEASE_CACHE_MS = 24 * 60 * 60 * 1000;
+
+function isNewerRelease(tag, installed) {
+  const version = /^v?(\d+(?:\.\d+){1,3})$/i.exec(tag || "");
+  if (!version) return false;
+  const candidate = version[1].split(".").map(Number);
+  const current = installed.split(".").map(Number);
+  for (let index = 0; index < Math.max(candidate.length, current.length); index++) {
+    const difference = (candidate[index] ?? 0) - (current[index] ?? 0);
+    if (difference) return difference > 0;
+  }
+  return false;
+}
+
+async function checkReleaseUpdate() {
+  const installed = chrome.runtime.getManifest().version;
+  $("installedVersion").textContent = installed;
+
+  try {
+    const storage = await chrome.storage.local.get(RELEASE_CACHE_KEY);
+    let cached = storage[RELEASE_CACHE_KEY];
+    if (!cached || Date.now() - cached.checkedAt >= RELEASE_CACHE_MS) {
+      const response = await fetch(`https://api.github.com/repos/${RELEASE_REPO}/releases/latest`, {
+        credentials: "omit",
+        signal: AbortSignal.timeout(5000)
+      });
+      if (!response.ok) return;
+      const release = await response.json();
+      const tag = release.tag_name;
+      const asset = release.assets?.find(({ name, browser_download_url: url }) =>
+        /^maps-export-overlay-.*\.zip$/i.test(name) &&
+        url === `https://github.com/${RELEASE_REPO}/releases/download/${encodeURIComponent(tag)}/${encodeURIComponent(name)}`
+      );
+      cached = {
+        checkedAt: Date.now(),
+        tag: release.draft || release.prerelease ? "" : tag,
+        url: asset?.browser_download_url || ""
+      };
+      await chrome.storage.local.set({ [RELEASE_CACHE_KEY]: cached });
+    }
+    if (cached.url && isNewerRelease(cached.tag, installed)) {
+      $("releaseVersion").textContent = `Доступна версия ${cached.tag.replace(/^v/i, "")}`;
+      $("releaseZip").href = cached.url;
+      $("releaseUpdate").hidden = false;
+    }
+  } catch {
+    // Checking for updates must not interfere with collection or export.
+  }
+}
+
 document.addEventListener("DOMContentLoaded", async () => {
+  void checkReleaseUpdate();
   $("btnShowPanel").addEventListener("click", showPanel);
   $("btnEnrichment").addEventListener("click", openEnrichment);
   $("btnExport").addEventListener("click", async () => {

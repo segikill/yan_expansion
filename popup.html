@@ -103,6 +103,11 @@
       line-height: 1.45;
     }
     .privacy-note b { color: #ccefff; }
+    #releaseUpdate:not([hidden]) { display: inline-block; vertical-align: 2px; }
+    #releaseUpdate summary { cursor: pointer; list-style: none; color: #9eb0c6; font-size: 12px; }
+    #releaseUpdate summary::-webkit-details-marker { display: none; }
+    #releaseUpdate summary:hover, #releaseUpdate summary:focus-visible, #releaseZip { color: var(--cyan); }
+    .release-menu { position: absolute; z-index: 2; left: 0; right: 0; top: 42px; background: #101f32; font-weight: normal; }
     .actions { display: grid; gap: 7px; }
     button {
       min-height: 38px;
@@ -148,7 +153,15 @@
         <span class="brand-mark" aria-hidden="true"><i></i><i></i><i></i></span>
         <div>
           <div class="eyebrow">Сбор данных с карт</div>
-          <div class="title">Maps Export <span class="version">1.12.4</span></div>
+          <div class="title">Maps Export <span class="version" id="installedVersion"></span>
+            <details id="releaseUpdate" hidden>
+              <summary title="Доступно обновление" aria-label="Доступно обновление">↑</summary>
+              <div class="privacy-note release-menu">
+                <b id="releaseVersion"></b>
+                <a id="releaseZip" target="_blank" rel="noopener noreferrer">Скачать ZIP</a>
+                <div>Распакуйте ZIP в текущую папку расширения с заменой файлов. На странице расширений нажмите «Обновить».</div>
+              </div>
+            </details></div>
         </div>
       </div>
       <div class="source-badge" id="source" title="Текущая вкладка">карта не открыта</div>

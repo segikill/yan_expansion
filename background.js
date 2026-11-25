@@ -20,9 +20,10 @@
   const sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
 
   function validCoordinatePair(latValue, lonValue) {
-    const lat = Number(String(latValue ?? "").replace(",", "."));
-    const lon = Number(String(lonValue ?? "").replace(",", "."));
-    return Number.isFinite(lat) && Number.isFinite(lon) && Math.abs(lat) <= 90 && Math.abs(lon) <= 180
+    if (String(latValue ?? "").trim() === "" || String(lonValue ?? "").trim() === "") return null;
+    const lat = Number(String(latValue).replace(",", "."));
+    const lon = Number(String(lonValue).replace(",", "."));
+    return Number.isFinite(lat) && Number.isFinite(lon) && (lat !== 0 || lon !== 0) && Math.abs(lat) <= 90 && Math.abs(lon) <= 180
       ? { lat: String(lat), lon: String(lon) }
       : null;
   }
@@ -50,7 +51,7 @@
       started_at: "",
       completed_at: "",
       source: "yandex",
-      settings: { workers: 1, timeout_ms: 25000, max_attempts: 3, delay_ms: 1200 },
+      settings: { workers: 2, timeout_ms: 25000, max_attempts: 3, delay_ms: 1200 },
       tasks: {},
       workers: [],
       totals: { total: 0, queued: 0, active: 0, success: 0, error: 0, captcha: 0, rate_limited: 0, cancelled: 0 }
@@ -138,7 +139,7 @@
   }
 
   function publicState(job, resultCount, baseCount) {
-    return { job, result_count: resultCount, base_count: baseCount.total, base_counts: baseCount, controller_version: "1.12.4" };
+    return { job, result_count: resultCount, base_count: baseCount.total, base_counts: baseCount, controller_version: "1.12.5" };
   }
 
   async function getState() {
@@ -162,7 +163,8 @@
   async function startJob(options) {
     const source = options?.source === "2gis" ? "2gis" : "yandex";
     const scope = ["unprocessed", "all", "errors"].includes(options?.scope) ? options.scope : "unprocessed";
-    const workersCount = Math.min(4, Math.max(1, Number(options?.workers) || 1));
+    const requestedWorkers = Number(options?.workers ?? 2);
+    const workersCount = Math.min(8, Math.max(1, Number.isFinite(requestedWorkers) ? Math.trunc(requestedWorkers) : 2));
     const timeoutMs = Math.min(90000, Math.max(10000, Number(options?.timeout_ms) || 25000));
     const maxAttempts = Math.min(5, Math.max(1, Number(options?.max_attempts) || 3));
     const delayMs = Math.min(15000, Math.max(300, Number(options?.delay_ms) || 1200));

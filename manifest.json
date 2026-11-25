@@ -1,7 +1,7 @@
 {
   "manifest_version": 3,
   "name": "Maps Export Overlay: Yandex, Google, 2GIS",
-  "version": "1.12.4",
+  "version": "1.12.5",
   "description": "Сбор объектов с карт и досбор подробных данных по URL в фоновых вкладках.",
   "icons": {
     "16": "icons/icon-16.png",
@@ -28,6 +28,7 @@
     "alarms"
   ],
   "host_permissions": [
+    "https://api.github.com/*",
     "https://*.yandex.ru/maps/*",
     "https://*.ya.ru/maps/*",
     "https://*.yandex.com/maps/*",

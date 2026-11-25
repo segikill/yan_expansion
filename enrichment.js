@@ -330,6 +330,20 @@
     return detailCategories.slice(0, 1);
   }
 
+  function hotelAmenities(base, detail) {
+    const data = detail.category_data;
+    if (data?.fields?.amenities?.length) return data.fields.amenities;
+    if ((detail.source || base.source) !== "yandex") return [];
+    const categories = exportCategories(base, detail).join(" ");
+    if (data?.adapter_id !== "hotel" && !/отел|гостиниц|гостев(?:ой|ые) дом|хостел|мотел|hotel/i.test(categories)) return [];
+
+    const amenityName = /wi[- ]?fi|интернет|парков|кондиционер|бассейн|саун|баня|завтрак|питан|трансфер|прачечн|лифт|спа|spa|фитнес|тренажёр|кухня|пляж|детская площадка|с животными|уборка|холодильник|терраса|мангальн/i;
+    const amenities = Object.entries(data?.raw_attributes || {})
+      .filter(([key, value]) => amenityName.test(key) && String(value ?? "").trim())
+      .map(([key, value]) => /^да$/i.test(String(value).trim()) ? key : `${key}: ${value}`);
+    return Array.from(new Set(amenities));
+  }
+
   async function exportWorkbook() {
     try {
       setStatus("\u0421обираю XLSX\u2026");
@@ -379,7 +393,7 @@
           "Время заезда": fields.checkin_time || "",
           "Год постройки": fields.construction_year || "",
           "Время выезда": fields.checkout_time || "",
-          "Удобства отеля": fields.amenities || [],
+          "Удобства отеля": hotelAmenities(base, detail),
           "Номер в реестре": fields.registry_number || "",
           "Ссылка на реестр": fields.registry_url || "",
           "Парковка — характеристики": fields.parking_features || [],
@@ -425,16 +439,20 @@
   document.addEventListener("DOMContentLoaded", () => {
     const applyTheme = initThemePreferences();
     $("detailSource").addEventListener("change", () => lastState && render(lastState));
-    $("btnStart").addEventListener("click", () => runAction("ENRICHMENT_START", {
-      options: {
-        source: selectedSource(),
-        scope: $("scope").value,
-        workers: Number($("workers").value),
-        max_attempts: Number($("maxAttempts").value),
-        timeout_ms: Number($("timeout").value) * 1000,
-        delay_ms: 1200
-      }
-    }, "\u0414осбор \u0437а\u043fущен"));
+    $("btnStart").addEventListener("click", () => {
+      const workers = $("workers");
+      if (!workers.reportValidity()) return;
+      runAction("ENRICHMENT_START", {
+        options: {
+          source: selectedSource(),
+          scope: $("scope").value,
+          workers: workers.valueAsNumber,
+          max_attempts: Number($("maxAttempts").value),
+          timeout_ms: Number($("timeout").value) * 1000,
+          delay_ms: 1200
+        }
+      }, "\u0414осбор \u0437а\u043fущен");
+    });
     $("btnPause").addEventListener("click", () => runAction("ENRICHMENT_PAUSE", {}, "\u041eче\u0440е\u0434\u044c \u043d\u0430 \u043f\u0430\u0443\u0437е"));
     $("btnResume").addEventListener("click", () => runAction("ENRICHMENT_RESUME", {}, "\u041e\u0447\u0435\u0440е\u0434\u044c \u043f\u0440од\u043e\u043b\u0436\u0435на"));
     $("btnRetry").addEventListener("click", () => runAction("ENRICHMENT_RETRY_ERRORS", {}, "\u041e\u0448\u0438\u0431\u043a\u0438 \u0432е\u0440\u043dу\u0442ы \u0432 \u043e\u0447\u0435р\u0435\u0434ь"));

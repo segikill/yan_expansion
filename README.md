@@ -6,7 +6,7 @@
 
 [![Скачать расширение](https://img.shields.io/badge/Скачать-расширение-blue?style=for-the-badge&logo=github)](https://github.com/segikill/yan_expansion/releases)
 
-[Скачать ZIP версии 1.12.4](https://github.com/segikill/yan_expansion/releases/download/v1.12.4/maps-export-overlay-1.12.4-private.zip)
+[Скачать ZIP версии 1.12.5](https://github.com/segikill/yan_expansion/releases/download/v1.12.5/maps-export-overlay-1.12.5-private.zip)
 
 ## Установка
 

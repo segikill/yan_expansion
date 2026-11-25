@@ -9,7 +9,7 @@ from playwright.sync_api import sync_playwright
 
 
 ROOT = Path(__file__).resolve().parents[1]
-ARCHIVE = ROOT / "release" / "maps-export-overlay-1.12.4-private.zip"
+ARCHIVE = ROOT / "release" / "maps-export-overlay-1.12.5-private.zip"
 def loaded_extension_id(context, path: Path) -> str:
     deadline = time.time() + 8
     while time.time() < deadline:
@@ -69,7 +69,25 @@ def main() -> int:
                 page = context.new_page()
                 page.goto(f"chrome-extension://{ext_id}/popup.html", wait_until="domcontentloaded")
                 page.wait_for_selector("#btnShowPanel")
-                assert "Локальная обработка" in page.locator(".privacy-note").inner_text()
+                assert "Локальная обработка" in page.locator("aside.privacy-note").inner_text()
+                for tag in ("v1.12.5", "v1.12.6"):
+                    url = f"https://github.com/segikill/yan_expansion/releases/download/{tag}/maps-export-overlay-{tag[1:]}-private.zip"
+                    page.evaluate(
+                        """async ({tag, url}) => chrome.storage.local.set({
+                            maps_export_release_check_v1: {checkedAt: Date.now(), tag, url}
+                        })""",
+                        {"tag": tag, "url": url},
+                    )
+                    page.reload(wait_until="domcontentloaded")
+                    indicator = page.locator("#releaseUpdate")
+                    if tag == "v1.12.5":
+                        assert indicator.is_hidden()
+                    else:
+                        indicator.wait_for(state="visible")
+                        assert page.locator("#releaseZip").is_hidden()
+                        indicator.locator("summary").click()
+                        assert page.locator("#releaseZip").is_visible()
+                        assert page.locator("#releaseZip").get_attribute("href") == url
                 page.goto(f"chrome-extension://{ext_id}/privacy.html", wait_until="domcontentloaded")
                 assert page.locator("h1").inner_text() == "Конфиденциальность и данные"
                 assert "Всё хранится локально" in page.locator(".notice").inner_text()
