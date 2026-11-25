@@ -2,6 +2,7 @@
   "use strict";
 
   const api = globalThis.browser || globalThis.chrome;
+  const IMPORT_KEY = "maps_export_enrichment_xlsx_v1";
   const SESSION_KEY = "maps_export_session_v2";
   const JOB_KEY = "maps_export_enrichment_job_v1";
   const RESULTS_KEY = "maps_export_enrichment_results_v1";
@@ -14,6 +15,7 @@
   const $ = (id) => document.getElementById(id);
   let lastState = null;
   let refreshTimer = null;
+  let inputWorkbook = null;
 
   const STATUS_LABELS = {
     idle: "\u043d\u0435 \u0437\u0430\u043f\u0443\u0449\u0435\u043d",
@@ -132,7 +134,7 @@
   }
 
   function selectedSource() {
-    return $("detailSource")?.value === "2gis" ? "2gis" : "yandex";
+    return $("detailSource").value;
   }
 
   function formatDuration(minutes) {
@@ -187,10 +189,16 @@
   function render(state) {
     lastState = state;
     const job = state.job;
-    const jobLocked = ["running", "paused"].includes(job.status);
-    if (jobLocked && ["yandex", "2gis"].includes(job.source)) $("detailSource").value = job.source;
+    const jobLocked = ["running", "paused", "blocked"].includes(job.status);
+    if (jobLocked && ["yandex", "2gis", "xlsx"].includes(job.source)) $("detailSource").value = job.source;
     const source = jobLocked ? job.source : selectedSource();
-    const sourceBaseCount = Number(state.base_counts?.[source] ?? state.base_count ?? 0);
+    const fromFile = source === "xlsx";
+    const input = fromFile ? selectedWorkbookColumn() : null;
+    const sourceBaseCount = fromFile ? input?.links.length || 0 : Number(state.base_counts?.[source] ?? state.base_count ?? 0);
+    $("xlsxSetup").classList.toggle("hidden", !fromFile);
+    if (fromFile) $("xlsxInfo").textContent = input
+      ? `Строк со ссылками: ${input.links.length} из ${input.rowCount}. Повторяющиеся карточки обрабатываются один раз.`
+      : "Выберите файл. Первая строка листа используется как заголовок.";
     const totals = job.totals || {};
     const done = Number(totals.success || 0) + Number(totals.error || 0) + Number(totals.captcha || 0) + Number(totals.rate_limited || 0) + Number(totals.cancelled || 0);
     const total = Number(totals.total || 0);
@@ -214,28 +222,31 @@
     $("progressTrack").setAttribute("aria-valuenow", String(percent));
     $("progressTrack").setAttribute("aria-valuetext", total ? `${done} из ${total}` : "Очередь не создана");
     $("progressText").textContent = total ? `\u041e\u0431\u0440\u0430\u0431\u043e\u0442\u0430\u043d\u043e ${done} \u0438з ${total}` : "\u0413\u043e\u0442\u043e\u0432\u043e \u043a \u0437\u0430\u043f\u0443\u0441\u043a\u0443";
-    $("baseCount").textContent = `${sourceBaseCount} объектов ${source === "2gis" ? "2ГИС" : "Яндекса"} в базовом сборе · ${state.result_count || 0} результатов всего`;
-    $("sourceModeHint").textContent = source === "2gis"
-      ? "Отдельная очередь откроет /tab/info в 1–4 неактивных вкладках и прочитает структурированный объект карточки."
+    $("baseCount").textContent = fromFile ? `${sourceBaseCount} строк со ссылками · ${job.source === "xlsx" ? state.result_count : 0} результатов` : `${sourceBaseCount} объектов ${source === "2gis" ? "2ГИС" : "Яндекса"} в базовом сборе · ${state.result_count || 0} результатов всего`;
+    $("sourceModeHint").textContent = fromFile ? "Поддерживаются ссылки на карточки Яндекса и 2ГИС." : source === "2gis"
+      ? "Отдельная очередь откроет /tab/info в 1–8 неактивных вкладках и прочитает структурированный объект карточки."
       : "Карточки Яндекса откроются в фоновых вкладках: обзор и вкладка «Особенности».";
     if (sourceBaseCount && $("statusText").textContent.startsWith("\u0421\u043d\u0430\u0447\u0430\u043b\u0430")) {
       setStatus("\u0411\u0430\u0437\u043e\u0432\u044b\u0435 URL \u0433\u043e\u0442\u043e\u0432\u044b. \u0412\u044b\u0431\u0435\u0440\u0438\u0442\u0435 \u043f\u0430\u0440\u0430\u043c\u0435\u0442\u0440\u044b \u0438 \u0437\u0430\u043f\u0443\u0441\u0442\u0438\u0442\u0435 \u0434\u043e\u0441\u0431\u043e\u0440.");
     }
 
     $("btnStart").disabled = !sourceBaseCount || jobLocked;
-    $("btnStart").title = !sourceBaseCount ? `Сначала зафиксируйте карточки ${source === "2gis" ? "2ГИС" : "Яндекса"} на карте` : "Запустить новую очередь досбора";
-    for (const id of ["detailSource", "scope", "workers", "maxAttempts", "timeout"]) $(id).disabled = jobLocked;
+    $("btnStart").title = !sourceBaseCount && fromFile ? "Выберите лист и столбец со ссылками" : !sourceBaseCount ? `Сначала зафиксируйте карточки ${source === "2gis" ? "2ГИС" : "Яндекса"} на карте` : "Запустить новую очередь досбора";
+    for (const id of ["detailSource", "workers", "maxAttempts", "timeout", "xlsxFile"]) $(id).disabled = jobLocked;
+    $("scope").disabled = jobLocked || fromFile;
+    $("xlsxSheet").disabled = jobLocked || !inputWorkbook;
+    $("xlsxColumn").disabled = jobLocked || !$("xlsxColumn").options.length;
     $("btnPause").disabled = job.status !== "running";
     $("btnResume").disabled = !["paused", "blocked", "stopped"].includes(job.status);
     $("btnStop").disabled = !["running", "paused", "blocked"].includes(job.status);
     $("btnForceReset").disabled = job.status === "idle" && !total && !state.result_count;
     $("btnRetry").disabled = !(totals.error || totals.captcha || totals.rate_limited);
-    $("btnExport").disabled = !state.base_count;
+    $("btnExport").disabled = fromFile ? job.source !== "xlsx" || !total : !state.base_count;
 
     const blockedWorker = job.workers?.find((worker) => ["captcha", "rate_limited"].includes(worker.status));
     $("alert").classList.toggle("hidden", job.status !== "blocked");
     const isRateLimited = blockedWorker?.status === "rate_limited";
-    const provider = job.source === "2gis" ? "2ГИС" : "Яндекс";
+    const provider = job.tasks?.[blockedWorker?.current_object_key]?.source === "2gis" || job.source === "2gis" ? "2ГИС" : "Яндекс";
     $("alertTitle").textContent = isRateLimited ? `Лимит ${provider}` : "CAPTCHA";
     $("alertText").textContent = job.status === "blocked" ? `${provider} запросил проверку. Очередь остановлена, данные сохранены.` : "";
     if (job.status === "blocked" && isRateLimited) {
@@ -249,6 +260,7 @@
   async function refresh() {
     try {
       const response = await send("ENRICHMENT_GET_STATE");
+      if (!lastState && response.job.source === "xlsx") $("detailSource").value = "xlsx";
       render(response);
     } catch (error) {
       setStatus(String(error?.message || error), true);
@@ -344,8 +356,189 @@
     return Array.from(new Set(amenities));
   }
 
+  function selectedWorkbookColumn() {
+    const sheet = $("xlsxSheet").value;
+    const column = Number($("xlsxColumn").value);
+    const worksheet = inputWorkbook?.book.Sheets[sheet];
+    if (!worksheet?.["!ref"] || !$("xlsxColumn").value) return null;
+    const range = XLSX.utils.decode_range(worksheet["!ref"]);
+    const links = [];
+    for (let row = range.s.r + 1; row <= range.e.r; row++) {
+      const cell = worksheet[XLSX.utils.encode_cell({ r: row, c: column })];
+      const url = String(cell?.l?.Target || cell?.v || "").trim();
+      if (url) links.push({ row, url });
+    }
+    return { sheet, column, links, rowCount: range.e.r - range.s.r };
+  }
+
+  function populateWorkbookColumns() {
+    const worksheet = inputWorkbook?.book.Sheets[$("xlsxSheet").value];
+    const select = $("xlsxColumn");
+    select.replaceChildren();
+    if (worksheet?.["!ref"]) {
+      const range = XLSX.utils.decode_range(worksheet["!ref"]);
+      for (let column = range.s.c; column <= range.e.c; column++) {
+        const cell = worksheet[XLSX.utils.encode_cell({ r: range.s.r, c: column })];
+        const label = String(cell?.v ?? "").trim();
+        select.add(new Option(`${XLSX.utils.encode_col(column)} · ${label || "Без заголовка"}`, column));
+        if (/^(url|ссылка)$/i.test(label)) select.value = String(column);
+      }
+    }
+    if (lastState) render(lastState);
+  }
+
+  async function loadInputWorkbook() {
+    const file = $("xlsxFile").files[0];
+    inputWorkbook = null;
+    $("xlsxSheet").replaceChildren();
+    populateWorkbookColumns();
+    if (!file) return;
+    try {
+      const data = await new Promise((resolve, reject) => {
+        const reader = new FileReader();
+        reader.onload = () => resolve(String(reader.result).split(",")[1]);
+        reader.onerror = () => reject(reader.error);
+        reader.readAsDataURL(file);
+      });
+      if ($("xlsxFile").files[0] !== file) return;
+      inputWorkbook = { data, name: file.name, book: XLSX.read(data, { type: "base64", cellStyles: true }) };
+      for (const name of inputWorkbook.book.SheetNames) $("xlsxSheet").add(new Option(name, name));
+      populateWorkbookColumns();
+    } catch {
+      setStatus("Не удалось открыть XLSX", true);
+    }
+  }
+
+  function importedCoordinatePair(latValue, lonValue) {
+    const latitude = String(latValue ?? "").trim().replace(",", ".");
+    const longitude = String(lonValue ?? "").trim().replace(",", ".");
+    if (!latitude || !longitude) return null;
+    const lat = Number(latitude);
+    const lon = Number(longitude);
+    if (!Number.isFinite(lat) || !Number.isFinite(lon) || Math.abs(lat) > 90 || Math.abs(lon) > 180 || (!lat && !lon)) return null;
+    return { lat, lon };
+  }
+
+  async function exportImportedWorkbook() {
+    const [storage, response] = await Promise.all([
+      api.storage.local.get([IMPORT_KEY, JOB_KEY]),
+      send("ENRICHMENT_GET_RESULTS", { imported: true })
+    ]);
+    const imported = storage[IMPORT_KEY];
+    const job = storage[JOB_KEY];
+    if (!imported || job?.source !== "xlsx" || job.run_id !== imported.runId) throw new Error("Нет результатов досбора из XLSX");
+    const book = XLSX.read(imported.data, { type: "base64", cellStyles: true });
+    const sheet = book.Sheets[imported.sheet];
+    const range = XLSX.utils.decode_range(sheet["!ref"]);
+    const byRow = new Map();
+    for (const task of Object.values(job.tasks)) {
+      for (const row of task.rows || []) byRow.set(row, task);
+    }
+    const columns = Object.keys(detailRow({}, {}));
+    const existing = new Set();
+    let latitudeColumn = -1;
+    let longitudeColumn = -1;
+    for (let c = range.s.c; c <= range.e.c; c++) {
+      const name = String(sheet[XLSX.utils.encode_cell({ r: range.s.r, c })]?.v ?? "");
+      existing.add(name);
+      const label = name.trim().toLowerCase();
+      if (latitudeColumn < 0 && /^(lat|latitude|широта)$/.test(label)) latitudeColumn = c;
+      if (longitudeColumn < 0 && /^(lon|lng|longitude|долгота)$/.test(label)) longitudeColumn = c;
+    }
+    const headers = columns.map((name) => {
+      let label = name;
+      for (let index = 1; existing.has(label); index++) label = `Досбор — ${name}${index > 1 ? ` (${index})` : ""}`;
+      existing.add(label);
+      return label;
+    });
+    const output = [headers];
+    for (let r = range.s.r + 1; r <= range.e.r; r++) {
+      const task = byRow.get(r);
+      const cell = sheet[XLSX.utils.encode_cell({ r, c: imported.column })];
+      const detail = task ? response.results[task.object_key] || task : {};
+      const row = task ? detailRow({ source: task.source }, detail) : {};
+      const existingPair = latitudeColumn >= 0 && longitudeColumn >= 0
+        ? importedCoordinatePair(
+          sheet[XLSX.utils.encode_cell({ r, c: latitudeColumn })]?.v,
+          sheet[XLSX.utils.encode_cell({ r, c: longitudeColumn })]?.v
+        )
+        : null;
+      const coordinates = existingPair || importedCoordinatePair(detail.lat, detail.lon);
+      row["Широта"] = coordinates?.lat ?? "";
+      row["Долгота"] = coordinates?.lon ?? "";
+      if (!task) row["Статус досбора"] = String(cell?.l?.Target || cell?.v || "").trim()
+        ? "неподдерживаемая ссылка" : "нет ссылки";
+      output.push(columns.map((name) => Array.isArray(row[name]) ? row[name].join(" | ") : row[name] ?? ""));
+    }
+    XLSX.utils.sheet_add_aoa(sheet, output, { origin: { r: range.s.r, c: range.e.c + 1 } });
+    const filename = `${safeFilePart(imported.name.replace(/\.xlsx$/i, ""))}_досбор.xlsx`;
+    XLSX.writeFileXLSX(book, filename, { compression: true });
+    setStatus(`Скачан ${filename}`);
+  }
+
+  function detailRow(base, detail) {
+    const fields = detail.category_data?.fields || {};
+    const categories = exportCategories(base, detail);
+    return {
+      "Источник": base.source || detail.source || "",
+      "ID объекта": detail.org_id || base.org_id || "",
+      "Название": detail.title || base.title || "",
+      "categories_all": categories,
+      "category_first": categories[0] || "",
+      "Адрес": detail.address || base.address || "",
+      "Телефоны": detail.phones || [],
+      "Сайты": detail.websites || [],
+      "Рейтинг": detail.rating || base.rating || "",
+      "Количество отзывов": detail.reviews || base.reviews || "",
+      "Количество фотографий": base.photos_count || "",
+      "Широта": detail.lat || base.lat || "",
+      "Долгота": detail.lon || base.lon || "",
+      "URL": publicUrl(detail.url || base.url),
+      "opening_hours": detail.opening_hours || [],
+      "working_status": detail.working_status || "",
+      "close_time": detail.close_time || "",
+      "Описание": detail.description || "",
+      "Социальные сети": detail.social_links || [],
+      "Средний счёт": fields.average_bill || "",
+      "Ценовой уровень": fields.price_level || "",
+      "Кухня": fields.cuisine || [],
+      "Тип заведения": fields.venue_types || [],
+      "Посадочных мест": fields.seats || "",
+      "Меню": fields.menu || [],
+      "Услуги заведения": fields.services || [],
+      "Способы оплаты": fields.payment_methods || [],
+      "Количество звёзд": fields.star_rating || "",
+      "Тип гостиницы": fields.hotel_type || "",
+      "Количество номеров": fields.room_count || "",
+      "Типы номеров": fields.room_types || [],
+      "Цена номера": fields.room_price || "",
+      "Время заезда": fields.checkin_time || "",
+      "Год постройки": fields.construction_year || "",
+      "Время выезда": fields.checkout_time || "",
+      "Удобства отеля": hotelAmenities(base, detail),
+      "Номер в реестре": fields.registry_number || "",
+      "Ссылка на реестр": fields.registry_url || "",
+      "Парковка — характеристики": fields.parking_features || [],
+      "Парковка — платная": yesNo(fields.paid),
+      "Парковка — охраняемая": yesNo(fields.guarded),
+      "Парковка — открытая": yesNo(fields.open_air),
+      "Парковка — уличная": yesNo(fields.street),
+      "Парковка — вместимость": fields.capacity || "",
+      "Парковка — доступ": fields.access || "",
+      "Парковка — уровень": fields.level || "",
+      "Парковка — покрытие": fields.paving || "",
+      "Все особенности": readableAttributes(detail.category_data?.raw_attributes),
+      "Статус досбора": STATUS_LABELS[detail.status] || detail.status || "не обработано",
+      "Ошибка досбора": detail.error || ""
+    };
+  }
+
   async function exportWorkbook() {
     try {
+      if (selectedSource() === "xlsx") {
+        await exportImportedWorkbook();
+        return;
+      }
       setStatus("\u0421обираю XLSX\u2026");
       const [storage, response] = await Promise.all([
         api.storage.local.get(SESSION_KEY),
@@ -355,60 +548,7 @@
       const results = response.results || {};
       const objects = Object.entries(session.objects || {}).map(([objectKey, base]) => {
         const detail = results[objectKey] || {};
-        const fields = detail.category_data?.fields || {};
-        const categories = exportCategories(base, detail);
-        return {
-          "Источник": base.source || detail.source || "",
-          "ID объекта": detail.org_id || base.org_id || "",
-          "Название": detail.title || base.title || "",
-          "categories_all": categories,
-          "category_first": categories[0] || "",
-          "Адрес": detail.address || base.address || "",
-          "Телефоны": detail.phones || [],
-          "Сайты": detail.websites || [],
-          "Рейтинг": detail.rating || base.rating || "",
-          "Количество отзывов": detail.reviews || base.reviews || "",
-          "Количество фотографий": base.photos_count || "",
-          "Широта": detail.lat || base.lat || "",
-          "Долгота": detail.lon || base.lon || "",
-          "URL": publicUrl(detail.url || base.url),
-          "opening_hours": detail.opening_hours || [],
-          "working_status": detail.working_status || "",
-          "close_time": detail.close_time || "",
-          "Описание": detail.description || "",
-          "Социальные сети": detail.social_links || [],
-          "Средний счёт": fields.average_bill || "",
-          "Ценовой уровень": fields.price_level || "",
-          "Кухня": fields.cuisine || [],
-          "Тип заведения": fields.venue_types || [],
-          "Посадочных мест": fields.seats || "",
-          "Меню": fields.menu || [],
-          "Услуги заведения": fields.services || [],
-          "Способы оплаты": fields.payment_methods || [],
-          "Количество звёзд": fields.star_rating || "",
-          "Тип гостиницы": fields.hotel_type || "",
-          "Количество номеров": fields.room_count || "",
-          "Типы номеров": fields.room_types || [],
-          "Цена номера": fields.room_price || "",
-          "Время заезда": fields.checkin_time || "",
-          "Год постройки": fields.construction_year || "",
-          "Время выезда": fields.checkout_time || "",
-          "Удобства отеля": hotelAmenities(base, detail),
-          "Номер в реестре": fields.registry_number || "",
-          "Ссылка на реестр": fields.registry_url || "",
-          "Парковка — характеристики": fields.parking_features || [],
-          "Парковка — платная": yesNo(fields.paid),
-          "Парковка — охраняемая": yesNo(fields.guarded),
-          "Парковка — открытая": yesNo(fields.open_air),
-          "Парковка — уличная": yesNo(fields.street),
-          "Парковка — вместимость": fields.capacity || "",
-          "Парковка — доступ": fields.access || "",
-          "Парковка — уровень": fields.level || "",
-          "Парковка — покрытие": fields.paving || "",
-          "Все особенности": readableAttributes(detail.category_data?.raw_attributes),
-          "Статус досбора": STATUS_LABELS[detail.status] || detail.status || "не обработано",
-          "Ошибка досбора": detail.error || ""
-        };
+        return detailRow(base, detail);
       });
 
       if (!objects.length) throw new Error("\u0412 \u0431\u0430зовой \u0441\u0435\u0441\u0441\u0438\u0438 \u043d\u0435т \u043e\u0431\u044a\u0435\u043a\u0442\u043eв");
@@ -439,12 +579,20 @@
   document.addEventListener("DOMContentLoaded", () => {
     const applyTheme = initThemePreferences();
     $("detailSource").addEventListener("change", () => lastState && render(lastState));
+    $("xlsxFile").addEventListener("change", loadInputWorkbook);
+    $("xlsxSheet").addEventListener("change", populateWorkbookColumns);
+    $("xlsxColumn").addEventListener("change", () => lastState && render(lastState));
     $("btnStart").addEventListener("click", () => {
       const workers = $("workers");
       if (!workers.reportValidity()) return;
+      const input = selectedSource() === "xlsx" ? selectedWorkbookColumn() : null;
+      if (selectedSource() === "xlsx" && !input?.links.length) return;
       runAction("ENRICHMENT_START", {
         options: {
           source: selectedSource(),
+          ...(input ? { workbook: {
+            data: inputWorkbook.data, name: inputWorkbook.name, sheet: input.sheet, column: input.column
+          }, links: input.links } : {}),
           scope: $("scope").value,
           workers: workers.valueAsNumber,
           max_attempts: Number($("maxAttempts").value),
@@ -460,6 +608,12 @@
       if (confirm("\u041e\u0441\u0442\u0430\u043d\u043e\u0432ить досбор и закрыть рабочие вкладки?")) runAction("ENRICHMENT_STOP", {}, "\u0414\u043e\u0441б\u043e\u0440 \u043eстановлен");
     });
     $("btnForceReset").addEventListener("click", () => {
+      if (lastState?.job.source === "xlsx") {
+        if (confirm("Сбросить очередь и результаты досбора из XLSX?")) {
+          runAction("ENRICHMENT_FORCE_RESET", { importOnly: true }, "Досбор из XLSX сброшен");
+        }
+        return;
+      }
       if (confirm("Принудительно закрыть рабочие вкладки и удалить очередь вместе с результатами досбора? Базовые карточки и URL останутся в основной сессии.")) {
         runAction("ENRICHMENT_FORCE_RESET", {}, "Досбор полностью сброшен. Можно запускать новое задание");
       }

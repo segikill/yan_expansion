@@ -2,6 +2,7 @@
   "use strict";
 
   const api = globalThis.browser || globalThis.chrome;
+  const IMPORT_KEY = "maps_export_enrichment_xlsx_v1";
   const SESSION_KEY = "maps_export_session_v2";
   const JOB_KEY = "maps_export_enrichment_job_v1";
   const RESULTS_KEY = "maps_export_enrichment_results_v1";
@@ -139,7 +140,7 @@
   }
 
   function publicState(job, resultCount, baseCount) {
-    return { job, result_count: resultCount, base_count: baseCount.total, base_counts: baseCount, controller_version: "1.12.5" };
+    return { job, result_count: resultCount, base_count: baseCount.total, base_counts: baseCount, controller_version: "1.12.6" };
   }
 
   async function getState() {
@@ -150,7 +151,7 @@
       yandex: objects.filter((object) => object?.source === "yandex" && detailUrlForObject(object)).length,
       "2gis": objects.filter((object) => object?.source === "2gis" && detailUrlForObject(object)).length
     };
-    return publicState(job, Object.keys(results).length, baseCount);
+    return publicState(job, Object.keys(results).filter((key) => key.startsWith("xlsx:") === (job.source === "xlsx")).length, baseCount);
   }
 
   async function ensureWatchdog(active) {
@@ -160,8 +161,30 @@
     } catch {}
   }
 
+  function importedObjects(links, runId) {
+    const objects = {};
+    for (const { row, url } of links) {
+      if (!Number.isInteger(row) || row < 0 || typeof url !== "string") continue;
+      let parsed;
+      try { parsed = new URL(url); } catch { continue; }
+      if (!/^https?:$/.test(parsed.protocol) || parsed.username || parsed.password || parsed.port) continue;
+      parsed.protocol = "https:";
+      const yandex = /(^|\.)(yandex\.(ru|com)|ya\.ru)$/i.test(parsed.hostname);
+      const gis = /(^|\.)2gis\.(ru|com)$/i.test(parsed.hostname);
+      const source = yandex ? "yandex" : gis ? "2gis" : "";
+      const orgId = yandex && parsed.pathname.startsWith("/maps/") ? orgIdFromYandexUrl(parsed.href)
+        : gis ? parsed.pathname.match(/\/(?:firm|geo)\/(\d{10,})(?:\/|$)/i)?.[1] : "";
+      if (!source || !orgId) continue;
+      const key = `xlsx:${runId}:${source}:${orgId}`;
+      const object = objects[key] ||= { source, org_id: orgId, url: parsed.href, rows: [] };
+      object.rows.push(row);
+    }
+    return objects;
+  }
+
   async function startJob(options) {
-    const source = options?.source === "2gis" ? "2gis" : "yandex";
+    const workbook = options?.workbook;
+    const source = workbook ? "xlsx" : options?.source === "2gis" ? "2gis" : "yandex";
     const scope = ["unprocessed", "all", "errors"].includes(options?.scope) ? options.scope : "unprocessed";
     const requestedWorkers = Number(options?.workers ?? 2);
     const workersCount = Math.min(8, Math.max(1, Number.isFinite(requestedWorkers) ? Math.trunc(requestedWorkers) : 2));
@@ -171,24 +194,27 @@
 
     const state = await serial(async () => {
       const [previousJob, session, results] = await Promise.all([loadJob(), storageGet(SESSION_KEY), loadResults()]);
-      if (["running", "paused"].includes(previousJob.status)) {
+      if (["running", "paused", "blocked"].includes(previousJob.status)) {
         throw new Error("\u0414\u0440\u0443\u0433\u043e\u0439 \u0434\u043e\u0441\u0431\u043e\u0440 \u0443\u0436\u0435 \u0437\u0430\u043f\u0443\u0449\u0435\u043d");
       }
 
+      const runId = `run_${Date.now()}_${Math.random().toString(36).slice(2, 8)}`;
+      const objects = workbook ? importedObjects(options.links || [], runId) : session?.objects || {};
       const tasks = {};
-      for (const [objectKey, object] of Object.entries(session?.objects || {})) {
-        if (object?.source !== source) continue;
+      for (const [objectKey, object] of Object.entries(objects)) {
+        if (!workbook && object?.source !== source) continue;
         const detailUrl = detailUrlForObject(object);
         if (!detailUrl) continue;
         const existing = results[objectKey];
         const previousTask = previousJob.tasks?.[objectKey];
-        const include = scope === "all" ||
+        const include = workbook || scope === "all" ||
           (scope === "unprocessed" && existing?.status !== "success") ||
           (scope === "errors" && (existing?.status === "error" || previousTask?.status === "error"));
         if (!include) continue;
         tasks[objectKey] = {
           object_key: objectKey,
-          source,
+          source: object.source,
+          ...(workbook ? { rows: object.rows } : {}),
           org_id: String(object.org_id || orgIdFromYandexUrl(object.url) || ""),
           title: String(object.title || ""),
           url: detailUrl,
@@ -206,7 +232,7 @@
 
       const timestamp = nowIso();
       const job = emptyJob();
-      job.run_id = `run_${Date.now()}_${Math.random().toString(36).slice(2, 8)}`;
+      job.run_id = runId;
       job.status = "running";
       job.created_at = timestamp;
       job.started_at = timestamp;
@@ -221,7 +247,13 @@
         processed: 0,
         last_error: ""
       }));
-      await saveJob(job);
+      if (workbook) {
+        recalculateTotals(job);
+        const baseResults = Object.fromEntries(Object.entries(results).filter(([key]) => !key.startsWith("xlsx:")));
+        await storageSetMany({ [JOB_KEY]: job, [RESULTS_KEY]: baseResults, [IMPORT_KEY]: { ...workbook, runId } });
+      } else {
+        await saveJob(job);
+      }
       return job;
     });
 
@@ -397,7 +429,7 @@
       };
       const storagePatch = { [RESULTS_KEY]: results };
       const coordinates = validCoordinatePair(result?.lat, result?.lon);
-      const baseObject = session?.objects?.[objectKey];
+      const baseObject = job.source === "xlsx" ? null : session?.objects?.[objectKey];
       if (coordinates && baseObject) {
         baseObject.lat = coordinates.lat;
         baseObject.lon = coordinates.lon;
@@ -564,15 +596,14 @@
     return { ok: true };
   }
 
-  async function forceResetEnrichment() {
+  async function forceResetEnrichment(importOnly) {
     const tabIds = await serial(async () => {
       const job = await loadJob();
       const ids = job.workers.map((worker) => worker.tab_id).filter(Number.isInteger);
       const freshJob = emptyJob();
-      await storageSetMany({
-        [JOB_KEY]: freshJob,
-        [RESULTS_KEY]: {}
-      });
+      if (importOnly && job.source !== "xlsx") throw new Error("Текущая очередь создана из базовой сессии");
+      const results = importOnly ? Object.fromEntries(Object.entries(await loadResults()).filter(([key]) => !key.startsWith("xlsx:"))) : {};
+      await storageSetMany({ [JOB_KEY]: freshJob, [RESULTS_KEY]: results, [IMPORT_KEY]: null });
       return ids;
     });
 
@@ -647,12 +678,16 @@
   async function handleMessage(message, sender) {
     switch (message?.type) {
       case "ENRICHMENT_GET_STATE": return { ok: true, ...(await getState()) };
-      case "ENRICHMENT_GET_RESULTS": return { ok: true, results: await loadResults() };
+      case "ENRICHMENT_GET_RESULTS": {
+        const results = await loadResults();
+        return { ok: true, results: Object.fromEntries(Object.entries(results)
+          .filter(([key]) => key.startsWith("xlsx:") === (message.imported === true))) };
+      }
       case "ENRICHMENT_START": return startJob(message.options || {});
       case "ENRICHMENT_PAUSE": return pauseJob();
       case "ENRICHMENT_RESUME": return resumeJob();
       case "ENRICHMENT_STOP": return stopJob();
-      case "ENRICHMENT_FORCE_RESET": return forceResetEnrichment();
+      case "ENRICHMENT_FORCE_RESET": return forceResetEnrichment(message.importOnly === true);
       case "ENRICHMENT_RETRY_ERRORS": return retryErrors();
       case "OPEN_ENRICHMENT": {
         let sourceTab = sender?.tab || null;

@@ -1017,14 +1017,14 @@ function stop2gisAutoScan() {
   return get2gisScanState();
 }
 
-function parseCard(card) {
+function parseCard(card, coordinates) {
   const link = card.querySelector('a[href*="/maps/org/"]');
   const { url, org_id } = cleanOrgUrl(link ? link.href : "");
   const title = parseTitle(card);
   const { rating, reviews } = parseRatingAndReviews(card);
   const categories_all = parseCategories(card);
   const photos_count = parsePhotosCount(card);
-  const { lat, lon } = parseCoords(card);
+  const { lat, lon } = coordinates?.get(org_id) || parseCoords(card);
   const address = parseAddress(card);
 
   const net = org_id ? (NET_CACHE.get(org_id) || {}) : {};
@@ -1082,6 +1082,7 @@ function collectAllCards() {
   }
 
   // Yandex
+  const coordinates = globalThis.MapsYandexCoordinates?.read(document);
   const links = qsa(document, 'a[href*="/maps/org/"]');
   const seen = new Set();
   const rows = [];
@@ -1090,7 +1091,7 @@ function collectAllCards() {
     const { org_id } = cleanOrgUrl(a.href);
     if (!org_id || seen.has(org_id)) continue;
     const card = cardFromLink(a);
-    const row = parseCard(card);
+    const row = parseCard(card, coordinates);
     if (!row.org_id) continue;
     seen.add(org_id);
     rows.push(row);

@@ -97,7 +97,7 @@
         <div>
           <div class="product-line">
             <span class="product-name">Maps Export</span>
-            <span class="version">1.12.5</span>
+            <span class="version">1.12.6</span>
           </div>
           <h1>Досбор данных по URL</h1>
           <p class="subtitle">Второй этап сбора: открытие карточек, получение деталей и локальное сохранение результата.</p>
@@ -146,9 +146,28 @@
           <select id="detailSource">
             <option value="yandex">Яндекс Карты — особенности карточек</option>
             <option value="2gis">2ГИС — Инфо и items/byid</option>
+            <option value="xlsx">Из файла XLSX</option>
           </select>
         </label>
         <p id="sourceModeHint" class="source-mode-hint">Карточки Яндекса открываются в фоновых вкладках.</p>
+      </div>
+
+      <div id="xlsxSetup" class="hidden">
+        <div class="setup-grid">
+          <label class="field field-wide">
+            <span>Исходная таблица XLSX</span>
+            <input id="xlsxFile" type="file" accept=".xlsx">
+          </label>
+          <label class="field">
+            <span>Лист</span>
+            <select id="xlsxSheet"></select>
+          </label>
+          <label class="field">
+            <span>Столбец со ссылками</span>
+            <select id="xlsxColumn"></select>
+          </label>
+        </div>
+        <p class="source-mode-hint" id="xlsxInfo" role="status">Выберите файл. Первая строка листа используется как заголовок.</p>
       </div>
 
       <div class="setup-grid">

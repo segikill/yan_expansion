@@ -129,9 +129,10 @@
     await expandCardSections();
     const startedAt = Date.now();
     const overviewResult = parser.parseDocument(document, location.href);
+    const coordinates = globalThis.MapsYandexCoordinates?.read(document).get(expectedOrgId || actualOrgId);
     const featuresReady = await openFeaturesTab();
     const featureResult = featuresReady ? parser.parseDocument(document, location.href) : overviewResult;
-    const result = mergeParseResults(overviewResult, featureResult);
+    const result = { ...mergeParseResults(overviewResult, featureResult), ...coordinates };
     if (!result.title && !result.address) throw new Error("\u0412 \u043a\u0430\u0440\u0442\u043e\u0447\u043a\u0435 \u043d\u0435 \u043d\u0430\u0439\u0434\u0435\u043d\u044b \u043e\u0441\u043d\u043e\u0432\u043d\u044b\u0435 \u043f\u043e\u043b\u044f");
     result.duration_ms = Date.now() - startedAt;
     return { ok: true, status: "success", result };

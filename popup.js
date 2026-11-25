@@ -87,7 +87,7 @@ async function ensureScripts(tab, source) {
 
   const files = source === "google"
     ? ["xlsx.full.min.js", "google_content.js", "overlay.js"]
-    : ["xlsx.full.min.js", "content.js", "overlay.js"];
+    : ["xlsx.full.min.js", "yandex_coordinates.js", "content.js", "overlay.js"];
 
   try {
     await chrome.scripting.executeScript({ target: { tabId: tab.id }, files });
