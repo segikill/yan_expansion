@@ -40,6 +40,9 @@ let workerResponse = {
   }
 };
 
+const windowCreates = [];
+const windowUpdates = [];
+const removedWindows = [];
 const event = () => ({ addListener() {} });
 const browser = {
   runtime: {
@@ -59,11 +62,33 @@ const browser = {
     async create() {},
     async clear() { return true; }
   },
+  windows: {
+    onRemoved: event(),
+    async get(id) {
+      return { id, type: "normal", tabs: [...tabs.values()].filter((tab) => tab.windowId === id) };
+    },
+    async create(properties) {
+      windowCreates.push(properties);
+      if (properties.type === "popup") throw new Error("Popup unsupported");
+      if (properties.url) {
+        const tab = { id: nextTabId++, windowId: 3, url: properties.url };
+        tabs.set(tab.id, tab);
+        return { id: 3 };
+      }
+      tabs.get(properties.tabId).windowId = 2;
+      return { id: 2 };
+    },
+    async update(id, properties) { windowUpdates.push({ id, properties }); },
+    async remove(id) {
+      removedWindows.push(id);
+      for (const [tabId, tab] of tabs) if (tab.windowId === id) tabs.delete(tabId);
+    }
+  },
   tabs: {
     onUpdated: { addListener(handler) { tabsUpdatedHandler = handler; } },
     onRemoved: event(),
     async create(properties) {
-      const tab = { id: nextTabId++, ...properties };
+      const tab = { id: nextTabId++, windowId: 1, ...properties };
       tabs.set(tab.id, tab);
       return tab;
     },
@@ -82,7 +107,7 @@ const browser = {
     async remove(tabIds) {
       for (const tabId of Array.isArray(tabIds) ? tabIds : [tabIds]) tabs.delete(tabId);
     },
-    async query() { return []; }
+    async query() { return [...tabs.values()]; }
   }
 };
 
@@ -132,6 +157,26 @@ async function waitForJob(status) {
 
   const workerTabId = storage[JOB_KEY].workers[0].tab_id;
   assert.equal(tabs.get(workerTabId).url, "https://yandex.ru/maps/org/object/1234567890/");
+  const arrange = {
+    type: "ENRICHMENT_ARRANGE_WINDOWS",
+    area: { left: 0, top: 0, width: 1200, height: 800 }
+  };
+  const dashboard = { url: browser.runtime.getURL("enrichment.html") };
+  const arrangement = await message(arrange, dashboard);
+  assert.equal(arrangement.arranged, 1);
+  assert.equal(arrangement.skipped, 0);
+  assert.deepEqual(windowCreates.map(({ type }) => type), ["popup", "normal"]);
+  assert.equal(windowCreates[1].tabId, workerTabId);
+  assert.equal(storage[JOB_KEY].workers[0].tab_id, workerTabId);
+  assert.equal((await message(arrange, dashboard)).arranged, 1);
+  assert.equal(windowCreates.length, 2);
+  assert.equal(windowUpdates.at(-1).id, 2);
+  const withSummary = await message({ ...arrange, with_summary: true }, dashboard);
+  assert.equal(withSummary.summary_opened, true);
+  assert.equal(withSummary.arranged, 1);
+  assert.equal(windowCreates.at(-1).url, browser.runtime.getURL("enrichment-summary.html"));
+  assert.equal(windowCreates.at(-1).tabId, undefined);
+
   tabsUpdatedHandler(workerTabId, { status: "complete" });
 
   const deadline = Date.now() + 2000;
@@ -160,7 +205,11 @@ async function waitForJob(status) {
 
   workerResponse = originalResponse;
   assert.equal((await message({ type: "ENRICHMENT_START", options: { ...repeatOptions, scope: "errors" } })).ok, true);
+  assert.equal((await message(arrange, dashboard)).arranged, 1);
   assert.equal((await message({ type: "ENRICHMENT_STOP" })).ok, true);
+  assert.deepEqual(removedWindows, [2, 3]);
+  assert.ok(Date.parse(storage[JOB_KEY].completed_at));
+  assert.equal(storage[JOB_KEY].status, "stopped");
   assert.equal(storage[RESULTS_KEY]["yandex:1234567890"].title, savedDetails.title);
   assert.equal((await message({ type: "ENRICHMENT_RESUME" })).ok, true);
   tabsUpdatedHandler(storage[JOB_KEY].workers[0].tab_id, { status: "complete" });
@@ -180,11 +229,26 @@ async function waitForJob(status) {
   const fileRun = storage[JOB_KEY].run_id;
   assert.equal((await message({ type: "ENRICHMENT_START", options: fileOptions })).ok, false);
   assert.equal(storage[JOB_KEY].run_id, fileRun);
+  const fileResults = (await message({ type: "ENRICHMENT_GET_RESULTS", imported: true })).results;
+  assert.equal((await message({ type: "ENRICHMENT_START", options: repeatOptions })).ok, true);
+  let state = await message({ type: "ENRICHMENT_GET_STATE" });
+  assert.equal(state.xlsx_queue.status, "completed");
+  assert.equal(state.saved_counts.xlsx, 1);
+  assert.deepEqual((await message({ type: "ENRICHMENT_GET_RESULTS", imported: true })).results, fileResults);
+  assert.equal((await message({ type: "ENRICHMENT_RESUME", source: "xlsx" })).ok, false);
+  assert.equal((await message({ type: "ENRICHMENT_STOP" })).ok, true);
   assert.equal((await message({ type: "ENRICHMENT_GET_STATE" })).saved_counts.xlsx, 1);
   assert.equal((await message({ type: "ENRICHMENT_START", options: { ...fileOptions, restartWorkbook: true } })).ok, true);
   assert.notEqual(storage[JOB_KEY].run_id, fileRun);
   assert.equal((await message({ type: "ENRICHMENT_GET_STATE" })).saved_counts.xlsx, 0);
   assert.deepEqual(storage[RESULTS_KEY]["yandex:1234567890"], savedDetails);
+  const pendingFileRun = storage[JOB_KEY].run_id;
+  assert.equal((await message({ type: "ENRICHMENT_STOP" })).ok, true);
+  assert.equal((await message({ type: "ENRICHMENT_START", options: repeatOptions })).ok, true);
+  assert.equal((await message({ type: "ENRICHMENT_STOP" })).ok, true);
+  assert.equal((await message({ type: "ENRICHMENT_RESUME", source: "xlsx" })).ok, true);
+  assert.equal(storage[JOB_KEY].run_id, pendingFileRun);
+  assert.equal(storage[JOB_KEY].totals.active, 1);
   assert.equal((await message({ type: "ENRICHMENT_FORCE_RESET", importOnly: true })).ok, true);
 
   storage[SESSION_KEY].objects = {
@@ -217,6 +281,18 @@ async function waitForJob(status) {
   assert.equal(storage[JOB_KEY].status, "blocked");
   assert.equal(storage[JOB_KEY].totals.rate_limited, 1);
   assert.equal(storage[RESULTS_KEY]["yandex:9876543210"].status, "rate_limited");
+
+  workerResponse = { ok: false, status: "captcha" };
+  assert.equal((await message({ type: "ENRICHMENT_RETRY_ERRORS" })).ok, true);
+  assert.equal(storage[JOB_KEY].totals.active, 1);
+  tabsUpdatedHandler(limitedTabId, { status: "complete" });
+  await waitForJob("blocked");
+  assert.equal(storage[JOB_KEY].totals.captcha, 1);
+  workerResponse = { ok: false, status: "rate_limited" };
+  assert.equal((await message({ type: "ENRICHMENT_RETRY_ERRORS" })).ok, true);
+  assert.equal(storage[JOB_KEY].totals.active, 1);
+  tabsUpdatedHandler(limitedTabId, { status: "complete" });
+  await waitForJob("blocked");
 
   const blockedReset = await message({ type: "ENRICHMENT_FORCE_RESET" });
   assert.equal(blockedReset.ok, true);

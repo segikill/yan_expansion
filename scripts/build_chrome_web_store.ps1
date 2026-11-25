@@ -1,5 +1,5 @@
 param(
-  [string]$Version = "1.12.10"
+  [string]$Version = "1.12.11"
 )
 
 $ErrorActionPreference = "Stop"
@@ -55,6 +55,8 @@ $files = @(
   "enrichment.html",
   "enrichment.css",
   "enrichment.js",
+  "enrichment-summary.html",
+  "enrichment-summary.js",
   "xlsx.full.min.js",
   "THIRD_PARTY_NOTICES.md"
 )

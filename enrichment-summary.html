@@ -1,0 +1,34 @@
+<!doctype html>
+<html lang="ru">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Ход досбора</title>
+<style>
+  :root { color-scheme: light dark; font: 14px system-ui, sans-serif; }
+  body { margin: 16px; }
+  h1 { font-size: 18px; margin: 0 0 8px; }
+  p { margin: 6px 0; }
+  progress { width: 100%; }
+  dl { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 10px; margin: 12px 0 0; }
+  dt { font-size: 12px; }
+  dd { margin: 2px 0 0; font-weight: 650; font-variant-numeric: tabular-nums; }
+</style>
+<script src="enrichment-summary.js" defer></script>
+</head>
+<body>
+<main>
+  <h1>Ход досбора</h1>
+  <p id="status" role="status">Загрузка…</p>
+  <progress id="progress" max="1" value="0" aria-label="Прогресс досбора"></progress>
+  <dl>
+    <div><dt>Собрано за прогон</dt><dd id="success">—</dd></div>
+    <div><dt>Осталось</dt><dd id="remaining">—</dd></div>
+    <div><dt>Ошибки</dt><dd id="errors">—</dd></div>
+    <div><dt>Сохранено всего</dt><dd id="saved">—</dd></div>
+    <div><dt>Прошло</dt><dd id="elapsed">—</dd></div>
+    <div><dt>До конца, оценка</dt><dd id="eta">—</dd></div>
+  </dl>
+</main>
+</body>
+</html>

@@ -248,7 +248,7 @@
     if (jobLocked && ["yandex", "2gis", "xlsx"].includes(job.source)) $("detailSource").value = job.source;
     const source = jobLocked ? job.source : selectedSource();
     const fromFile = source === "xlsx";
-    const savedFile = fromFile && job.source === "xlsx";
+    const savedFile = fromFile && Boolean(state.xlsx_queue);
     const input = fromFile ? selectedWorkbookColumn() : null;
     const sourceBaseCount = fromFile ? input?.links.length || 0 : Number(state.base_counts?.[source] ?? state.base_count ?? 0);
     $("xlsxSetup").classList.toggle("hidden", !fromFile);
@@ -259,7 +259,7 @@
     const done = Number(totals.success || 0) + Number(totals.error || 0) + Number(totals.captcha || 0) + Number(totals.rate_limited || 0) + Number(totals.cancelled || 0);
     const total = Number(totals.total || 0);
     const percent = total ? Math.min(100, Math.round(done * 100 / total)) : 0;
-    const elapsedMinutes = job.started_at ? Math.max((Date.now() - Date.parse(job.started_at)) / 60000, 1 / 60) : 0;
+    const elapsedMinutes = job.started_at ? Math.max(((Date.parse(job.completed_at) || Date.now()) - Date.parse(job.started_at)) / 60000, 1 / 60) : 0;
     const speed = done && elapsedMinutes ? done / elapsedMinutes : 0;
     const eta = speed ? (total - done) / speed : NaN;
 
@@ -270,17 +270,17 @@
     $("statTotal").textContent = String(total);
     $("statSuccess").textContent = String(totals.success || 0);
     $("statSaved").textContent = String(state.saved_counts?.[source] || 0);
-    $("statSavedScope").textContent = `с деталями из ${fromFile ? (savedFile ? total : 0) : sourceBaseCount}`;
+    $("statSavedScope").textContent = `с деталями из ${fromFile ? (savedFile ? state.xlsx_queue.total : 0) : sourceBaseCount}`;
     $("statActive").textContent = String(totals.active || 0);
     $("statError").textContent = String((totals.error || 0) + (totals.captcha || 0) + (totals.rate_limited || 0));
     $("statSpeed").textContent = speed ? speed.toFixed(speed < 10 ? 1 : 0) : "\u2014";
-    $("statEta").textContent = formatDuration(eta);
+    $("statEta").textContent = formatDuration(job.status === "running" ? eta : NaN);
     $("progressBar").style.width = `${percent}%`;
     $("progressPercent").textContent = `${percent}%`;
     $("progressTrack").setAttribute("aria-valuenow", String(percent));
     $("progressTrack").setAttribute("aria-valuetext", total ? `${done} из ${total}` : "Очередь не создана");
     $("progressText").textContent = total ? `\u041e\u0431\u0440\u0430\u0431\u043e\u0442\u0430\u043d\u043e ${done} \u0438з ${total}` : "\u0413\u043e\u0442\u043e\u0432\u043e \u043a \u0437\u0430\u043f\u0443\u0441\u043a\u0443";
-    $("baseCount").textContent = fromFile ? `${sourceBaseCount} строк со ссылками · ${job.source === "xlsx" ? state.result_count : 0} результатов` : `${sourceBaseCount} объектов ${source === "2gis" ? "2ГИС" : "Яндекса"} в базовом сборе · ${state.result_count || 0} результатов всего`;
+    $("baseCount").textContent = fromFile ? `${sourceBaseCount} строк со ссылками · ${state.saved_counts?.xlsx || 0} результатов` : `${sourceBaseCount} объектов ${source === "2gis" ? "2ГИС" : "Яндекса"} в базовом сборе · ${state.result_count || 0} результатов всего`;
     $("sourceModeHint").textContent = fromFile ? "Поддерживаются ссылки на карточки Яндекса и 2ГИС." : source === "2gis"
       ? "Отдельная очередь откроет /tab/info в 1–8 неактивных вкладках и прочитает структурированный объект карточки."
       : "Карточки Яндекса откроются в фоновых вкладках: обзор и вкладка «Особенности».";
@@ -296,12 +296,14 @@
     $("xlsxSheet").disabled = jobLocked || !inputWorkbook;
     $("xlsxColumn").disabled = jobLocked || !$("xlsxColumn").options.length;
     $("btnPause").disabled = job.status !== "running";
-    $("btnResume").textContent = job.source === "xlsx" ? "Продолжить досбор" : "Продолжить";
-    $("btnResume").disabled = !["paused", "blocked", "stopped"].includes(job.status);
+    $("btnResume").textContent = fromFile ? "Продолжить досбор" : "Продолжить";
+    $("btnResume").disabled = fromFile
+      ? (jobLocked && job.source !== "xlsx") || !["paused", "blocked", "stopped"].includes(state.xlsx_queue?.status)
+      : !["paused", "blocked", "stopped"].includes(job.status);
     $("btnStop").disabled = !["running", "paused", "blocked"].includes(job.status);
     $("btnForceReset").disabled = job.status === "idle" && !total && !state.result_count;
     $("btnRetry").disabled = !(totals.error || totals.captcha || totals.rate_limited);
-    $("btnExport").disabled = fromFile ? job.source !== "xlsx" || !total : !state.base_count;
+    $("btnExport").disabled = fromFile ? !state.xlsx_queue?.total : !state.base_count;
 
     const blockedWorker = job.workers?.find((worker) => ["captcha", "rate_limited"].includes(worker.status));
     $("alert").classList.toggle("hidden", job.status !== "blocked");
@@ -488,7 +490,8 @@
       send("ENRICHMENT_GET_RESULTS", { imported: true })
     ]);
     const imported = storage[IMPORT_KEY];
-    const job = storage[JOB_KEY];
+    const active = storage[JOB_KEY];
+    const job = active?.source === "xlsx" ? active : imported?.job;
     if (!imported || job?.source !== "xlsx" || job.run_id !== imported.runId) throw new Error("Нет результатов досбора из XLSX");
     const book = XLSX.read(imported.data, { type: "base64", cellStyles: true });
     const sheet = book.Sheets[imported.sheet];
@@ -662,9 +665,12 @@
           width: Math.round(screen.availWidth),
           height: Math.round(screen.availHeight)
         };
-        const result = await send("ENRICHMENT_ARRANGE_WINDOWS", { area });
+        const result = await send("ENRICHMENT_ARRANGE_WINDOWS", { area, with_summary: true });
         message.textContent = `Разложено: ${result.arranged} · в фоне: ${result.background}` +
-          (result.skipped ? ` · не удалось переместить: ${result.skipped}` : "");
+          (result.skipped ? ` · не удалось переместить: ${result.skipped}` : "") +
+          (result.summary_opened ? " · сводка открыта" : "") +
+          (result.summary_error ? ` · сводка: ${result.summary_error}` : "") +
+          (result.first_error ? ` · ${result.first_error}` : "");
       } catch (error) {
         message.textContent = String(error?.message || error);
       } finally {
@@ -734,7 +740,7 @@
       }, "\u0414осбор \u0437а\u043fущен");
     });
     $("btnPause").addEventListener("click", () => runAction("ENRICHMENT_PAUSE", {}, "\u041eче\u0440е\u0434\u044c \u043d\u0430 \u043f\u0430\u0443\u0437е"));
-    $("btnResume").addEventListener("click", () => runAction("ENRICHMENT_RESUME", {}, "\u041e\u0447\u0435\u0440е\u0434\u044c \u043f\u0440од\u043e\u043b\u0436\u0435на"));
+    $("btnResume").addEventListener("click", () => runAction("ENRICHMENT_RESUME", { source: selectedSource() }, "\u041e\u0447\u0435\u0440е\u0434\u044c \u043f\u0440од\u043e\u043b\u0436\u0435на"));
     $("btnRetry").addEventListener("click", () => runAction("ENRICHMENT_RETRY_ERRORS", {}, "\u041e\u0448\u0438\u0431\u043a\u0438 \u0432е\u0440\u043dу\u0442ы \u0432 \u043e\u0447\u0435р\u0435\u0434ь"));
     $("btnStop").addEventListener("click", () => {
       if (confirm("\u041e\u0441\u0442\u0430\u043d\u043e\u0432ить досбор и закрыть рабочие вкладки?")) runAction("ENRICHMENT_STOP", {}, "\u0414\u043e\u0441б\u043e\u0440 \u043eстановлен");

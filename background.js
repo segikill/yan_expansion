@@ -140,11 +140,11 @@
   }
 
   function publicState(job, resultCount, baseCount, savedCounts) {
-    return { job, result_count: resultCount, base_count: baseCount.total, base_counts: baseCount, saved_counts: savedCounts, controller_version: "1.12.10" };
+    return { job, result_count: resultCount, base_count: baseCount.total, base_counts: baseCount, saved_counts: savedCounts, controller_version: "1.12.11" };
   }
 
   async function getState() {
-    const [job, results, session] = await Promise.all([loadJob(), loadResults(), storageGet(SESSION_KEY)]);
+    const [job, results, session, imported] = await Promise.all([loadJob(), loadResults(), storageGet(SESSION_KEY), storageGet(IMPORT_KEY)]);
     const objects = Object.values(session?.objects || {});
     const baseCount = {
       total: objects.length,
@@ -155,10 +155,11 @@
     for (const [key, object] of Object.entries(session?.objects || {})) {
       if (Object.hasOwn(saved, object?.source) && object.source !== "xlsx" && detailUrlForObject(object) && results[key]?.status === "success") saved[object.source]++;
     }
-    if (job.source === "xlsx") {
-      saved.xlsx = Object.keys(job.tasks).filter((key) => results[key]?.status === "success").length;
+    const xlsxJob = job.source === "xlsx" ? job : imported?.job;
+    if (xlsxJob) {
+      saved.xlsx = Object.keys(xlsxJob.tasks).filter((key) => results[key]?.status === "success").length;
     }
-    return publicState(job, Object.keys(results).filter((key) => key.startsWith("xlsx:") === (job.source === "xlsx")).length, baseCount, saved);
+    return { ...publicState(job, Object.keys(results).filter((key) => key.startsWith("xlsx:") === (job.source === "xlsx")).length, baseCount, saved), xlsx_queue: xlsxJob ? { total: xlsxJob.totals.total, status: xlsxJob.status } : null };
   }
 
   async function ensureWatchdog(active) {
@@ -263,6 +264,14 @@
         recalculateTotals(job);
         const baseResults = Object.fromEntries(Object.entries(results).filter(([key]) => !key.startsWith("xlsx:")));
         await storageSetMany({ [JOB_KEY]: job, [RESULTS_KEY]: baseResults, [IMPORT_KEY]: { ...workbook, runId } });
+      } else if (previousJob.source === "xlsx") {
+        const imported = await storageGet(IMPORT_KEY);
+        if (imported?.runId === previousJob.run_id) {
+          recalculateTotals(job);
+          await storageSetMany({ [JOB_KEY]: job, [IMPORT_KEY]: { ...imported, job: previousJob } });
+        } else {
+          await saveJob(job);
+        }
       } else {
         await saveJob(job);
       }
@@ -590,9 +599,20 @@
     });
   }
 
-  async function resumeJob() {
+  async function resumeJob(source) {
     const result = await serial(async () => {
-      const job = await loadJob();
+      let job = await loadJob();
+      if (source === "xlsx" && job.source !== "xlsx") {
+        if (["running", "paused", "blocked"].includes(job.status)) {
+          throw new Error("Сначала завершите текущий досбор.");
+        }
+        const imported = await storageGet(IMPORT_KEY);
+        if (!imported?.job || imported.job.run_id !== imported.runId) {
+          throw new Error("Нет сохранённой очереди XLSX.");
+        }
+        job = normalizeJob(imported.job);
+        for (const worker of job.workers) worker.tab_id = null;
+      }
       if (!["paused", "blocked", "stopped"].includes(job.status)) throw new Error("\u042d\u0442\u0443 \u043e\u0447\u0435\u0440\u0435\u0434\u044c \u043d\u0435\u043b\u044c\u0437\u044f \u043f\u0440\u043e\u0434\u043e\u043b\u0436\u0438\u0442\u044c");
       for (const task of Object.values(job.tasks)) {
         if (["captcha", "rate_limited"].includes(task.status)) {
@@ -619,18 +639,43 @@
   }
 
   async function stopJob() {
-    const tabIds = await serial(async () => {
+    return serial(async () => {
       const job = await loadJob();
-      for (const worker of job.workers) requeueWorkerTask(job, worker, "\u041e\u0441\u0442\u0430\u043d\u043e\u0432\u043b\u0435\u043d\u043e \u043f\u043e\u043b\u044c\u0437\u043e\u0432\u0430\u0442\u0435\u043b\u0435\u043c", true);
+      const tabIds = job.workers.map((worker) => worker.tab_id).filter(Number.isInteger);
+      for (const worker of job.workers) requeueWorkerTask(job, worker, "Остановлено пользователем", true);
       job.status = "stopped";
+      job.completed_at = nowIso();
       await saveJob(job);
-      return job.workers.map((worker) => worker.tab_id).filter(Number.isInteger);
+      await ensureWatchdog(false);
+
+      const failed = await Promise.allSettled(tabIds.map(async (tabId) => {
+        const tab = await api.tabs.get(tabId).catch(() => null);
+        if (!tab) return;
+        const window = await api.windows?.get(tab.windowId, { populate: true }).catch(() => null);
+        if (window?.tabs?.length === 1 && window.tabs[0].id === tabId &&
+            (window.type === "popup" || arrangedWorkerWindowIds.has(window.id))) {
+          try {
+            await api.windows.remove(window.id);
+            return;
+          } catch {
+            // Fall back to closing the tab if the browser rejects closing the window.
+          }
+        }
+        await api.tabs.remove(tabId);
+      }));
+      for (const tab of await summaryTabs()) {
+        const window = await api.windows.get(tab.windowId, { populate: true }).catch(() => null);
+        if (window?.tabs?.length === 1 && window.tabs[0].id === tab.id) {
+          await api.windows.remove(window.id);
+        } else {
+          await api.tabs.remove(tab.id);
+        }
+      }
+      if (failed.some((result) => result.status === "rejected")) {
+        throw new Error("Досбор остановлен. Некоторые рабочие вкладки не удалось закрыть.");
+      }
+      return { ok: true };
     });
-    if (tabIds.length) {
-      try { await api.tabs.remove(tabIds); } catch {}
-    }
-    await ensureWatchdog(false);
-    return { ok: true };
   }
 
   async function forceResetEnrichment(importOnly) {
@@ -658,6 +703,14 @@
       for (const task of Object.values(job.tasks)) {
         if (["error", "captcha", "rate_limited"].includes(task.status)) {
           task.status = "queued";
+          const worker = job.workers.find((item) => item.current_object_key === task.object_key);
+          if (worker) {
+            setWorkerStage(worker, "idle");
+            worker.current_object_key = "";
+            worker.last_error = "";
+          }
+          task.assigned_worker = "";
+          task.assigned_at = "";
           task.attempts = 0;
           task.error = "";
           task.completed_at = "";
@@ -704,7 +757,7 @@
     return { ok: true, tab_id: tab.id };
   }
 
-  function workerWindowBounds(area) {
+  function workerWindowBounds(area, limit = 8) {
     const { left, top, width, height } = area || {};
     if (![left, top, width, height].every(Number.isInteger) ||
         width < 520 || height < 320 || width > 32768 || height > 32768) return [];
@@ -713,7 +766,7 @@
     const tileHeight = 320;
     const columns = Math.floor((width + gap) / (tileWidth + gap));
     const rows = Math.floor((height + gap) / (tileHeight + gap));
-    return Array.from({ length: Math.min(8, columns * rows) }, (_, index) => ({
+    return Array.from({ length: Math.min(limit, columns * rows) }, (_, index) => ({
       left: left + (index % columns) * (tileWidth + gap),
       top: top + Math.floor(index / columns) * (tileHeight + gap),
       width: tileWidth,
@@ -721,36 +774,78 @@
     }));
   }
 
-  async function arrangeWorkerWindows(area, sender) {
+  const arrangedWorkerWindowIds = new Set();
+  api.windows?.onRemoved?.addListener((windowId) => arrangedWorkerWindowIds.delete(windowId));
+
+  async function summaryTabs() {
+    const url = api.runtime.getURL("enrichment-summary.html");
+    return (await api.tabs.query({})).filter((tab) => tab.url === url);
+  }
+
+  async function arrangeWorkerWindows(area, sender, withSummary) {
     if (sender.url?.split(/[?#]/)[0] !== api.runtime.getURL("enrichment.html")) {
       throw new Error("Раскладка доступна из окна досбора.");
     }
-    const bounds = workerWindowBounds(area);
+    const bounds = workerWindowBounds(area, withSummary ? 9 : 8);
     if (!bounds.length) throw new Error("На этом экране недостаточно места для рабочего окна.");
     // Read the queue only. Moving tabs keeps their IDs and in-flight work.
     const job = await loadJob();
     const tabs = job.workers.map((worker) => worker.tab_id).filter(Number.isInteger);
-    if (!tabs.length) throw new Error("Сначала запустите досбор.");
+    if (!tabs.length || !["running", "paused", "blocked"].includes(job.status)) {
+      throw new Error("Сначала запустите досбор.");
+    }
+    let summaryOpened = false;
+    let summaryError = "";
+    if (withSummary) {
+      const slot = bounds.pop();
+      try {
+        const [existing] = await summaryTabs();
+        if (existing) {
+          await api.windows.update(existing.windowId, { state: "normal" });
+          await api.windows.update(existing.windowId, { ...slot, focused: true });
+        } else {
+          const url = api.runtime.getURL("enrichment-summary.html");
+          const options = { ...slot, url, focused: true };
+          await api.windows.create({ ...options, type: "popup" })
+            .catch(() => api.windows.create({ ...options, type: "normal" }));
+        }
+        summaryOpened = true;
+      } catch (error) {
+        bounds.push(slot);
+        summaryError = String(error?.message || error);
+      }
+    }
     let arranged = 0;
     let skipped = 0;
+    let firstError = "";
     for (const tabId of tabs) {
       if (arranged >= bounds.length) break;
       try {
         const current = await api.tabs.get(tabId);
         const window = await api.windows.get(current.windowId, { populate: true });
         const slot = bounds[arranged];
-        if (window.type === "popup" && window.tabs?.length === 1) {
+        if (window.tabs?.length === 1 && (window.type === "popup" || arrangedWorkerWindowIds.has(window.id))) {
           await api.windows.update(window.id, { state: "normal" });
           await api.windows.update(window.id, { ...slot, focused: true });
         } else {
-          await api.windows.create({ ...slot, tabId, type: "popup", focused: true });
+          try {
+            await api.windows.create({ ...slot, tabId, type: "popup", focused: true });
+          } catch (popupError) {
+            try {
+              const created = await api.windows.create({ ...slot, tabId, type: "normal", focused: true });
+              arrangedWorkerWindowIds.add(created.id);
+            } catch (normalError) {
+              throw new Error(`Всплывающее окно: ${popupError.message || popupError}. Обычное окно: ${normalError.message || normalError}.`);
+            }
+          }
         }
         arranged++;
-      } catch {
+      } catch (error) {
         skipped++;
+        firstError ||= String(error?.message || error);
       }
     }
-    return { ok: true, arranged, background: tabs.length - arranged - skipped, skipped };
+    return { ok: true, arranged, background: tabs.length - arranged, skipped, first_error: firstError, summary_opened: summaryOpened, summary_error: summaryError };
   }
 
   async function openWorker(workerId, objectKey) {
@@ -774,7 +869,7 @@
       }
       case "ENRICHMENT_START": return startJob(message.options || {});
       case "ENRICHMENT_PAUSE": return pauseJob();
-      case "ENRICHMENT_RESUME": return resumeJob();
+      case "ENRICHMENT_RESUME": return resumeJob(message.source);
       case "ENRICHMENT_STOP": return stopJob();
       case "ENRICHMENT_FORCE_RESET": return forceResetEnrichment(message.importOnly === true);
       case "ENRICHMENT_RETRY_ERRORS": return retryErrors();
@@ -785,7 +880,7 @@
         }
         return openDashboard(sourceTab);
       }
-      case "ENRICHMENT_ARRANGE_WINDOWS": return arrangeWorkerWindows(message.area, sender);
+      case "ENRICHMENT_ARRANGE_WINDOWS": return serial(() => arrangeWorkerWindows(message.area, sender, message.with_summary === true));
       case "ENRICHMENT_OPEN_WORKER": return openWorker(message.worker_id, message.object_key);
       case "ENRICHMENT_WORKER_READY":
         if (sender?.tab?.id) await dispatchForTab(sender.tab.id, true);
