@@ -1741,6 +1741,10 @@ body[data-job-status="running"] .status-backdrop { animation: status-aura-pulse 
 .worker-head { display: flex; justify-content: space-between; gap: 8px; }
 .worker strong { color: var(--text); font-size: 11px; }
 .worker-state { color: var(--cyan); font-size: 9px; font-weight: 800; letter-spacing: .05em; text-transform: uppercase; }
+.worker-diagnostics { display: grid; gap: 2px; }
+.worker-diagnostics [data-stage-started] { font-variant-numeric: tabular-nums; }
+.worker-diagnostics [data-suspended="true"] { color: var(--warning, #d9982e); font-weight: 700; }
+
 .worker-title { min-height: 34px; margin-top: 8px; overflow: hidden; color: var(--text-soft); font-size: 10px; line-height: 1.5; }
 .worker small { display: block; margin-top: 7px; color: var(--muted-2); font-size: 9px; }
 

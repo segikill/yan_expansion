@@ -147,6 +147,43 @@
     return `${hours} \u0447 ${rest} \u043c\u0438\u043d`;
   }
 
+  function workerStageTime(startedAt) {
+    if (!startedAt) return "—";
+    const elapsed = Math.max(0, Math.floor((Date.now() - startedAt) / 1000));
+    if (elapsed < 60) return `${elapsed} с`;
+    return `${Math.floor(elapsed / 60)} мин ${elapsed % 60} с`;
+  }
+
+  function browserTabState(tab) {
+    if (tab.discarded) return "Выгружена браузером";
+    if (tab.frozen) return "Заморожена браузером";
+    if (typeof tab.frozen !== "boolean") return "Заморозка: нет сведений";
+    return tab.active ? "Активна · не заморожена" : "В фоне · не заморожена";
+  }
+
+  let checkingWorkerTabs = false;
+  async function updateWorkerDiagnostics() {
+    for (const element of $("workersList").querySelectorAll("[data-stage-started]")) {
+      element.textContent = workerStageTime(Number(element.dataset.stageStarted));
+    }
+    if (checkingWorkerTabs) return;
+    checkingWorkerTabs = true;
+    try {
+      await Promise.all(Array.from($("workersList").querySelectorAll("[data-worker-tab]"), async (element) => {
+        try {
+          const tab = await api.tabs.get(Number(element.dataset.workerTab));
+          element.textContent = browserTabState(tab);
+          element.dataset.suspended = String(Boolean(tab.discarded || tab.frozen));
+        } catch {
+          element.textContent = "Вкладка закрыта или недоступна";
+          element.dataset.suspended = "false";
+        }
+      }));
+    } finally {
+      checkingWorkerTabs = false;
+    }
+  }
+
   function renderWorkers(job) {
     const root = $("workersList");
     if (!job.workers?.length) {
@@ -160,12 +197,19 @@
       const workerState = worker.status === "idle" && Number(worker.processed || 0) > 0
         ? "готово"
         : (STATUS_LABELS[worker.status] || worker.status);
+      const startedAt = Number(worker.stage_started_at) || Date.parse(task?.assigned_at || "") || 0;
+      const tabId = Number.isInteger(worker.tab_id) ? worker.tab_id : null;
       return `<article class="worker">
         <div class="worker-head"><strong>${escapeHtml(worker.worker_id)}</strong><span class="worker-state">${escapeHtml(workerState)}</span></div>
         <div class="worker-title">${escapeHtml(task?.title || (worker.status === "idle" ? "\u041e\u0436\u0438\u0434\u0430ет задачу" : ""))}</div>
+        <div class="worker-diagnostics">
+          <small>На этапе <span data-stage-started="${startedAt}">${workerStageTime(startedAt)}</span></small>
+          <small ${tabId == null ? "" : `data-worker-tab="${tabId}"`}>${tabId == null ? "Вкладка не открыта" : "Проверяю состояние…"}</small>
+        </div>
         <small>\u0413\u043e\u0442\u043e\u0432\u043e: ${Number(worker.processed || 0)}${worker.tab_id ? ` \u00b7 tab ${worker.tab_id}` : ""}</small>
       </article>`;
     }).join("");
+    void updateWorkerDiagnostics();
   }
 
   function renderTasks(job) {
@@ -588,6 +632,7 @@
   }
 
   document.addEventListener("DOMContentLoaded", () => {
+    setInterval(updateWorkerDiagnostics, 1000);
     const applyTheme = initThemePreferences();
     $("detailSource").addEventListener("change", () => lastState && render(lastState));
     $("xlsxFile").addEventListener("change", loadInputWorkbook);

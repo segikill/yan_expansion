@@ -140,7 +140,7 @@
   }
 
   function publicState(job, resultCount, baseCount, savedCounts) {
-    return { job, result_count: resultCount, base_count: baseCount.total, base_counts: baseCount, saved_counts: savedCounts, controller_version: "1.12.7" };
+    return { job, result_count: resultCount, base_count: baseCount.total, base_counts: baseCount, saved_counts: savedCounts, controller_version: "1.12.8" };
   }
 
   async function getState() {
@@ -254,6 +254,7 @@
         worker_id: `worker_${index + 1}`,
         tab_id: null,
         status: "idle",
+        stage_started_at: Date.now(),
         current_object_key: "",
         processed: 0,
         last_error: ""
@@ -282,6 +283,12 @@
     }
   }
 
+  function setWorkerStage(worker, status) {
+    if (worker.status === status && worker.stage_started_at) return;
+    worker.status = status;
+    worker.stage_started_at = Date.now();
+  }
+
   function requeueWorkerTask(job, worker, reason, interrupted = false) {
     const task = job.tasks?.[worker.current_object_key];
     if (task && ACTIVE_TASK_STATES.has(task.status)) {
@@ -293,7 +300,7 @@
       task.next_attempt_at = interrupted ? 0 : Date.now() + job.settings.delay_ms;
       if (task.status === "error") task.completed_at = nowIso();
     }
-    worker.status = "idle";
+    setWorkerStage(worker, "idle");
     worker.current_object_key = "";
     worker.last_error = reason;
   }
@@ -333,7 +340,7 @@
         task.assigned_worker = worker.worker_id;
         task.assigned_at = nowIso();
         task.error = "";
-        worker.status = "navigating";
+        setWorkerStage(worker, "navigating");
         worker.current_object_key = task.object_key;
         worker.last_error = "";
         assignments.push({ tab_id: worker.tab_id, task: { ...task }, run_id: job.run_id, settings: { ...job.settings } });
@@ -382,7 +389,7 @@
       const task = worker && job.tasks[worker.current_object_key];
       if (task?.status === "navigating") {
         task.status = "waiting_dom";
-        worker.status = "waiting_dom";
+        setWorkerStage(worker, "waiting_dom");
         await saveJob(job);
       }
     });
@@ -396,7 +403,7 @@
       const task = job.tasks[worker.current_object_key];
       if (!task || (task.status === "parsing" && !allowRepeat) || !ACTIVE_TASK_STATES.has(task.status)) return null;
       task.status = "parsing";
-      worker.status = "parsing";
+      setWorkerStage(worker, "parsing");
       await saveJob(job);
       return {
         type: "ENRICHMENT_PARSE_DETAIL",
@@ -426,7 +433,7 @@
         const task = worker && job.tasks[worker.current_object_key];
         if (task?.object_key === payload.object_key && task.status === "parsing") {
           task.status = "waiting_dom";
-          worker.status = "waiting_dom";
+          setWorkerStage(worker, "waiting_dom");
           worker.last_error = String(error?.message || error);
           await saveJob(job);
         }
@@ -469,7 +476,7 @@
       task.error = "";
       const worker = job.workers.find((item) => item.worker_id === task.assigned_worker);
       if (worker) {
-        worker.status = "idle";
+        setWorkerStage(worker, "idle");
         worker.current_object_key = "";
         worker.processed = Number(worker.processed || 0) + 1;
       }
@@ -523,7 +530,7 @@
         await storageSet(RESULTS_KEY, results);
       }
       if (worker) {
-        worker.status = "idle";
+        setWorkerStage(worker, "idle");
         worker.current_object_key = "";
         worker.last_error = task.error;
       }
@@ -549,7 +556,7 @@
       results[objectKey] = failedResult(results[objectKey], task, "captcha", url || task.url);
       await storageSet(RESULTS_KEY, results);
       const worker = job.workers.find((item) => item.worker_id === task.assigned_worker);
-      if (worker) worker.status = "captcha";
+      if (worker) setWorkerStage(worker, "captcha");
       job.status = "blocked";
       await saveJob(job);
     });
@@ -568,7 +575,7 @@
       results[objectKey] = failedResult(results[objectKey], task, "rate_limited", url || task.url);
       await storageSet(RESULTS_KEY, results);
       const worker = job.workers.find((item) => item.worker_id === task.assigned_worker);
-      if (worker) worker.status = "rate_limited";
+      if (worker) setWorkerStage(worker, "rate_limited");
       job.status = "blocked";
       await saveJob(job);
     });
@@ -597,7 +604,7 @@
       }
       for (const worker of job.workers) {
         if (["captcha", "rate_limited"].includes(worker.status)) {
-          worker.status = "idle";
+          setWorkerStage(worker, "idle");
           worker.current_object_key = "";
         }
       }

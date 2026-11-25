@@ -9,7 +9,7 @@ from playwright.sync_api import sync_playwright
 
 
 ROOT = Path(__file__).resolve().parents[1]
-ARCHIVE = ROOT / "release" / "maps-export-overlay-1.12.7-private.zip"
+ARCHIVE = ROOT / "release" / "maps-export-overlay-1.12.8-private.zip"
 def loaded_extension_id(context, path: Path) -> str:
     deadline = time.time() + 8
     while time.time() < deadline:
@@ -70,7 +70,7 @@ def main() -> int:
                 page.goto(f"chrome-extension://{ext_id}/popup.html", wait_until="domcontentloaded")
                 page.wait_for_selector("#btnShowPanel")
                 assert "Локальная обработка" in page.locator("aside.privacy-note").inner_text()
-                for tag in ("v1.12.7", "v1.12.8"):
+                for tag in ("v1.12.8", "v1.12.9"):
                     url = f"https://github.com/segikill/yan_expansion/releases/download/{tag}/maps-export-overlay-{tag[1:]}-private.zip"
                     page.evaluate(
                         """async ({tag, url}) => chrome.storage.local.set({
@@ -80,7 +80,7 @@ def main() -> int:
                     )
                     page.reload(wait_until="domcontentloaded")
                     indicator = page.locator("#releaseUpdate")
-                    if tag == "v1.12.7":
+                    if tag == "v1.12.8":
                         assert indicator.is_hidden()
                     else:
                         indicator.wait_for(state="visible")
