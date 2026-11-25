@@ -30,12 +30,12 @@
     );
   }
 
-  async function expandCardSections() {
+  async function expandCardSections(deadline) {
     const workingHoursControl = document.querySelector(".business-working-status-flip-view._clickable");
     if (!workingHoursControl) return;
     try {
       workingHoursControl.click();
-      for (let attempt = 0; attempt < 8; attempt += 1) {
+      for (let attempt = 0; attempt < 8 && Date.now() < deadline; attempt += 1) {
         const pageText = String(document.body?.innerText || "");
         if (/\u043f\u043e\u043d\u0435\u0434\u0435\u043b\u044c\u043d\u0438\u043a|\u0432\u043e\u0441\u043a\u0440\u0435\u0441\u0435\u043d\u044c\u0435/i.test(pageText)) break;
         await sleep(250);
@@ -43,27 +43,45 @@
     } catch {}
   }
 
-  async function openFeaturesTab() {
-    const panelSelector = ".business-features-view._view_tab";
-    const control = document.querySelector(".tabs-select-view__title._name_features");
-    const alreadyOpened = document.querySelector(panelSelector) ||
-      new URL(location.href).searchParams.get("tab") === "features";
-    if (!alreadyOpened && !control) return false;
-    if (!alreadyOpened) control.click();
-
+  async function waitForFeatures(deadline) {
+    let clickedAt = -Infinity;
     let previousState = "";
-    for (let attempt = 0; attempt < 24; attempt += 1) {
-      const panel = document.querySelector(panelSelector);
-      const rows = panel?.querySelectorAll(".business-features-view__valued, .business-features-view__bool-item, [class*='business-features-view__feature'], [class*='business-features-view__group'] li");
-      const text = Array.from(rows || [], (row) => row.textContent.trim()).filter(Boolean).join("\n");
-      const emptyNotice = panel?.querySelector(".business-features-view__empty")?.textContent.trim();
-      const state = text ? `rows:${text}` : emptyNotice ? `empty:${emptyNotice}` : "";
-      const ready = state && panel.getAttribute("aria-busy") !== "true";
-      if (ready && state === previousState) return Boolean(text);
-      previousState = ready ? state : "";
-      await sleep(250);
+    let stableSince = 0;
+    let recognizablePanel = false;
+
+    while (Date.now() < deadline) {
+      if (pageLooksLikeCaptcha()) return { state: "captcha" };
+      if (pageIsRateLimited()) return { state: "rate_limited" };
+      const panel = document.querySelector(".business-features-view._view_tab");
+      const activePanel = panel?.getClientRects().length ? panel : null;
+      const control = document.querySelector(".tabs-select-view__title._name_features");
+      const selected = new URL(location.href).searchParams.get("tab") === "features" ||
+        control?.getAttribute("aria-selected") === "true";
+      const now = Date.now();
+      if (!activePanel && !selected && control && now - clickedAt >= 1500) {
+        control.click();
+        clickedAt = now;
+      }
+
+      const loading = activePanel?.matches('[aria-busy="true"]') ||
+        activePanel?.querySelector('[aria-busy="true"], .business-features-view__loader');
+      const attributes = activePanel && !loading ? parser.parseAttributePairs(activePanel) : {};
+      const empty = activePanel && !loading && activePanel.querySelector(".business-features-view__empty")?.textContent.trim();
+      recognizablePanel = Boolean(activePanel && !loading && activePanel.textContent.trim());
+      const state = Object.keys(attributes).length ? JSON.stringify(attributes) : empty ? "empty" : "";
+      if (state !== previousState) {
+        previousState = state;
+        stableSince = now;
+      } else if (state && now - stableSince >= 500) {
+        return { state: state === "empty" ? "empty" : "collected", attributes };
+      }
+      if (!control && !activePanel && !selected && document.readyState === "complete" &&
+          document.querySelector(".tabs-select-view__title._name_overview") && now >= deadline - 250) {
+        return { state: "unavailable" };
+      }
+      await sleep(Math.min(250, Math.max(0, deadline - Date.now())));
     }
-    throw new Error("Раздел «Особенности» не загрузился за отведённое время");
+    return { state: recognizablePanel ? "unrecognized" : "timeout" };
   }
 
   function mergeParseResults(overview, features) {
@@ -89,8 +107,7 @@
     return merged;
   }
 
-  async function waitForCard(timeoutMs) {
-    const deadline = Date.now() + Math.max(5000, Number(timeoutMs) || DEFAULT_TIMEOUT_MS);
+  async function waitForCard(deadline) {
     let stableChecks = 0;
     while (Date.now() < deadline) {
       if (pageLooksLikeCaptcha()) return { captcha: true };
@@ -114,7 +131,9 @@
       throw new Error(`\u041e\u0442\u043a\u0440\u044b\u0442\u0430 \u0434\u0440\u0443\u0433\u0430\u044f \u043e\u0440\u0433\u0430\u043d\u0438\u0437\u0430\u0446\u0438\u044f: ${actualOrgId} \u0432\u043c\u0435\u0441\u0442\u043e ${expectedOrgId}`);
     }
 
-    const readiness = await waitForCard(message.timeout_ms);
+    const startedAt = Date.now();
+    const deadline = startedAt + Math.max(5000, Number(message.timeout_ms) || DEFAULT_TIMEOUT_MS);
+    const readiness = await waitForCard(deadline);
     if (readiness.captcha) return { ok: false, status: "captcha", url: location.href };
     if (readiness.rate_limited) {
       return {
@@ -126,15 +145,26 @@
     }
     if (readiness.timeout) throw new Error("\u041a\u0430\u0440\u0442\u043e\u0447\u043a\u0430 \u043e\u0440\u0433\u0430\u043d\u0438\u0437\u0430\u0446\u0438\u0438 \u043d\u0435 \u0437\u0430\u0433\u0440\u0443\u0437\u0438\u043b\u0430\u0441\u044c \u0437\u0430 \u043e\u0442\u0432\u0435\u0434\u0451\u043d\u043d\u043e\u0435 \u0432\u0440\u0435\u043c\u044f");
 
-    await expandCardSections();
-    const startedAt = Date.now();
+    await expandCardSections(deadline);
     const overviewResult = parser.parseDocument(document, location.href);
     const coordinates = globalThis.MapsYandexCoordinates?.read(document).get(expectedOrgId || actualOrgId);
-    const featuresReady = await openFeaturesTab();
-    const featureResult = featuresReady ? parser.parseDocument(document, location.href) : overviewResult;
-    const result = { ...mergeParseResults(overviewResult, featureResult), ...coordinates };
+    const features = await waitForFeatures(deadline);
+    if (features.state === "captcha" || features.state === "rate_limited") {
+      return { ok: false, status: features.state, url: location.href };
+    }
+    const finalOrgId = parser.orgIdFromUrl(location.href);
+    if (expectedOrgId && finalOrgId !== expectedOrgId) {
+      throw new Error(`Открыта другая организация: ${finalOrgId || "ID не найден"} вместо ${expectedOrgId}`);
+    }
+    const featureResult = features.state === "collected"
+      ? parser.parseDocument(document, location.href, features.attributes) : overviewResult;
+    const result = { ...mergeParseResults(overviewResult, featureResult), ...coordinates, feature_state: features.state };
     if (!result.title && !result.address) throw new Error("\u0412 \u043a\u0430\u0440\u0442\u043e\u0447\u043a\u0435 \u043d\u0435 \u043d\u0430\u0439\u0434\u0435\u043d\u044b \u043e\u0441\u043d\u043e\u0432\u043d\u044b\u0435 \u043f\u043e\u043b\u044f");
     result.duration_ms = Date.now() - startedAt;
+    if (features.state === "timeout" || features.state === "unrecognized") {
+      const error = features.state === "timeout" ? "Раздел «Особенности» не загрузился за отведённое время" : "Разметка «Особенностей» не распознана";
+      return { ok: false, status: "partial", result, error, url: location.href };
+    }
     return { ok: true, status: "success", result };
   }
 
@@ -145,7 +175,7 @@
     }
     if (message?.type !== "ENRICHMENT_PARSE_DETAIL") return;
 
-    const requestKey = `${message.run_id || ""}:${message.object_key || ""}:${message.attempt || ""}`;
+    const requestKey = `${message.run_id || ""}:${message.object_key || ""}:${message.attempt || ""}:${message.assigned_at || ""}`;
     if (!activeRequest || activeRequest.key !== requestKey) {
       activeRequest = {
         key: requestKey,

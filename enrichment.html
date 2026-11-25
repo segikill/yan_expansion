@@ -97,7 +97,7 @@
         <div>
           <div class="product-line">
             <span class="product-name">Maps Export</span>
-            <span class="version">1.12.6</span>
+            <span class="version">1.12.7</span>
           </div>
           <h1>Досбор данных по URL</h1>
           <p class="subtitle">Второй этап сбора: открытие карточек, получение деталей и локальное сохранение результата.</p>
@@ -203,7 +203,7 @@
 
         <button type="button" id="btnStart" class="button primary launch-button">
           <span class="button-glyph" aria-hidden="true">▶</span>
-          Запустить
+          <span id="startLabel">Запустить</span>
         </button>
       </div>
     </section>
@@ -217,7 +217,12 @@
       <article class="metric metric-success">
         <div class="metric-top"><span>Успешно</span><i class="metric-indicator success"></i></div>
         <strong id="statSuccess">0</strong>
-        <small>детали получены и сохранены</small>
+        <small>успешно в текущей очереди</small>
+      </article>
+      <article class="metric">
+        <div class="metric-top"><span>Сохранено</span><i class="metric-indicator success"></i></div>
+        <strong id="statSaved">0</strong>
+        <small id="statSavedScope">объектов с деталями</small>
       </article>
       <article class="metric metric-active">
         <div class="metric-top"><span>В работе</span><i class="metric-indicator active"></i></div>

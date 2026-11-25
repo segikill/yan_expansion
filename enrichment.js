@@ -28,6 +28,7 @@
     navigating: "\u043e\u0442\u043a\u0440\u044bвается",
     waiting_dom: "\u0437\u0430\u0433\u0440\u0443\u0436\u0430\u0435\u0442\u0441\u044f",
     parsing: "\u043f\u0430\u0440\u0441\u0438\u0442\u0441\u044f",
+    partial: "частично",
     success: "\u0433\u043e\u0442\u043e\u0432\u043e",
     error: "\u043e\u0448\u0438\u0431\u043a\u0430",
     captcha: "CAPTCHA",
@@ -193,6 +194,7 @@
     if (jobLocked && ["yandex", "2gis", "xlsx"].includes(job.source)) $("detailSource").value = job.source;
     const source = jobLocked ? job.source : selectedSource();
     const fromFile = source === "xlsx";
+    const savedFile = fromFile && job.source === "xlsx";
     const input = fromFile ? selectedWorkbookColumn() : null;
     const sourceBaseCount = fromFile ? input?.links.length || 0 : Number(state.base_counts?.[source] ?? state.base_count ?? 0);
     $("xlsxSetup").classList.toggle("hidden", !fromFile);
@@ -213,6 +215,8 @@
     $("jobBadge").className = `job-badge ${job.status}`;
     $("statTotal").textContent = String(total);
     $("statSuccess").textContent = String(totals.success || 0);
+    $("statSaved").textContent = String(state.saved_counts?.[source] || 0);
+    $("statSavedScope").textContent = `с деталями из ${fromFile ? (savedFile ? total : 0) : sourceBaseCount}`;
     $("statActive").textContent = String(totals.active || 0);
     $("statError").textContent = String((totals.error || 0) + (totals.captcha || 0) + (totals.rate_limited || 0));
     $("statSpeed").textContent = speed ? speed.toFixed(speed < 10 ? 1 : 0) : "\u2014";
@@ -230,13 +234,15 @@
       setStatus("\u0411\u0430\u0437\u043e\u0432\u044b\u0435 URL \u0433\u043e\u0442\u043e\u0432\u044b. \u0412\u044b\u0431\u0435\u0440\u0438\u0442\u0435 \u043f\u0430\u0440\u0430\u043c\u0435\u0442\u0440\u044b \u0438 \u0437\u0430\u043f\u0443\u0441\u0442\u0438\u0442\u0435 \u0434\u043e\u0441\u0431\u043e\u0440.");
     }
 
-    $("btnStart").disabled = !sourceBaseCount || jobLocked;
-    $("btnStart").title = !sourceBaseCount && fromFile ? "Выберите лист и столбец со ссылками" : !sourceBaseCount ? `Сначала зафиксируйте карточки ${source === "2gis" ? "2ГИС" : "Яндекса"} на карте` : "Запустить новую очередь досбора";
+    $("startLabel").textContent = savedFile ? "Начать заново" : "Запустить";
+    $("btnStart").disabled = (!sourceBaseCount && !(savedFile && !inputWorkbook)) || jobLocked;
+    $("btnStart").title = savedFile && !inputWorkbook ? "Заново обработать сохранённый XLSX" : !sourceBaseCount && fromFile ? "Выберите лист и столбец со ссылками" : !sourceBaseCount ? `Сначала зафиксируйте карточки ${source === "2gis" ? "2ГИС" : "Яндекса"} на карте` : "Запустить новую очередь досбора";
     for (const id of ["detailSource", "workers", "maxAttempts", "timeout", "xlsxFile"]) $(id).disabled = jobLocked;
     $("scope").disabled = jobLocked || fromFile;
     $("xlsxSheet").disabled = jobLocked || !inputWorkbook;
     $("xlsxColumn").disabled = jobLocked || !$("xlsxColumn").options.length;
     $("btnPause").disabled = job.status !== "running";
+    $("btnResume").textContent = job.source === "xlsx" ? "Продолжить досбор" : "Продолжить";
     $("btnResume").disabled = !["paused", "blocked", "stopped"].includes(job.status);
     $("btnStop").disabled = !["running", "paused", "blocked"].includes(job.status);
     $("btnForceReset").disabled = job.status === "idle" && !total && !state.result_count;
@@ -357,10 +363,13 @@
   }
 
   function selectedWorkbookColumn() {
-    const sheet = $("xlsxSheet").value;
-    const column = Number($("xlsxColumn").value);
-    const worksheet = inputWorkbook?.book.Sheets[sheet];
-    if (!worksheet?.["!ref"] || !$("xlsxColumn").value) return null;
+    if (!$("xlsxColumn").value) return null;
+    return workbookColumn(inputWorkbook?.book, $("xlsxSheet").value, Number($("xlsxColumn").value));
+  }
+
+  function workbookColumn(book, sheet, column) {
+    const worksheet = book?.Sheets[sheet];
+    if (!worksheet?.["!ref"]) return null;
     const range = XLSX.utils.decode_range(worksheet["!ref"]);
     const links = [];
     for (let row = range.s.r + 1; row <= range.e.r; row++) {
@@ -527,9 +536,11 @@
       "Парковка — доступ": fields.access || "",
       "Парковка — уровень": fields.level || "",
       "Парковка — покрытие": fields.paving || "",
-      "Все особенности": readableAttributes(detail.category_data?.raw_attributes),
-      "Статус досбора": STATUS_LABELS[detail.status] || detail.status || "не обработано",
-      "Ошибка досбора": detail.error || ""
+      "Все особенности": detail.feature_state === "empty" ? "--" : detail.status === "partial" ? "" : readableAttributes(detail.category_data?.raw_attributes),
+      "Статус досбора": detail.status === "success" && detail.last_attempt_status
+        ? "Детали сохранены · повтор не удался"
+        : STATUS_LABELS[detail.status] || detail.status || "не обработано",
+      "Ошибка досбора": detail.last_attempt_error || detail.error || ""
     };
   }
 
@@ -582,17 +593,36 @@
     $("xlsxFile").addEventListener("change", loadInputWorkbook);
     $("xlsxSheet").addEventListener("change", populateWorkbookColumns);
     $("xlsxColumn").addEventListener("change", () => lastState && render(lastState));
-    $("btnStart").addEventListener("click", () => {
+    $("btnStart").addEventListener("click", async () => {
       const workers = $("workers");
       if (!workers.reportValidity()) return;
-      const input = selectedSource() === "xlsx" ? selectedWorkbookColumn() : null;
-      if (selectedSource() === "xlsx" && !input?.links.length) return;
+      const source = selectedSource();
+      let fileOptions = {};
+      if (source === "xlsx") {
+        try {
+          const saved = (await api.storage.local.get(IMPORT_KEY))[IMPORT_KEY];
+          let input = selectedWorkbookColumn();
+          let file = inputWorkbook;
+          if (!file && saved) {
+            file = saved;
+            input = workbookColumn(XLSX.read(saved.data, { type: "base64" }), saved.sheet, saved.column);
+          }
+          if (!input?.links.length) return;
+          if (saved && !confirm("Начать досбор XLSX заново? Сохранённые результаты предыдущего досбора из файла будут заменены. Сначала скачайте их, если они нужны.")) return;
+          fileOptions = {
+            workbook: { data: file.data, name: file.name, sheet: input.sheet, column: input.column },
+            links: input.links,
+            restartWorkbook: Boolean(saved)
+          };
+        } catch (error) {
+          setStatus(String(error?.message || error), true);
+          return;
+        }
+      }
       runAction("ENRICHMENT_START", {
         options: {
-          source: selectedSource(),
-          ...(input ? { workbook: {
-            data: inputWorkbook.data, name: inputWorkbook.name, sheet: input.sheet, column: input.column
-          }, links: input.links } : {}),
+          source,
+          ...fileOptions,
           scope: $("scope").value,
           workers: workers.valueAsNumber,
           max_attempts: Number($("maxAttempts").value),

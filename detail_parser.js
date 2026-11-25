@@ -375,7 +375,7 @@
     return raw.replace(/\s/g, "").match(/\d+/)?.[0] || "";
   }
 
-  function parseDocument(doc, pageUrl) {
+  function parseDocument(doc, pageUrl, attributes = parseAttributePairs(doc)) {
     const schema = parseJsonLd(doc);
     const schemaTypes = unique(Array.isArray(schema["@type"]) ? schema["@type"] : [schema["@type"]]);
     const title = cleanText(schema.name) || textOf(doc, [
@@ -390,7 +390,6 @@
       '[itemprop="address"]'
     ]);
     const categories = parseCategories(doc, schema);
-    const attributes = parseAttributePairs(doc);
     const links = parseLinks(doc, pageUrl, schema);
     const hours = parseHours(doc, schema);
     const description = cleanText(schema.description) || textOf(doc, [
@@ -436,6 +435,7 @@
     PARSER_VERSION,
     CATEGORY_ADAPTERS,
     orgIdFromUrl,
-    parseDocument
+    parseDocument,
+    parseAttributePairs
   });
 })(globalThis);

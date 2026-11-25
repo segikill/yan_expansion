@@ -139,8 +139,8 @@
     }
   }
 
-  function publicState(job, resultCount, baseCount) {
-    return { job, result_count: resultCount, base_count: baseCount.total, base_counts: baseCount, controller_version: "1.12.6" };
+  function publicState(job, resultCount, baseCount, savedCounts) {
+    return { job, result_count: resultCount, base_count: baseCount.total, base_counts: baseCount, saved_counts: savedCounts, controller_version: "1.12.7" };
   }
 
   async function getState() {
@@ -151,7 +151,14 @@
       yandex: objects.filter((object) => object?.source === "yandex" && detailUrlForObject(object)).length,
       "2gis": objects.filter((object) => object?.source === "2gis" && detailUrlForObject(object)).length
     };
-    return publicState(job, Object.keys(results).filter((key) => key.startsWith("xlsx:") === (job.source === "xlsx")).length, baseCount);
+    const saved = { yandex: 0, "2gis": 0, xlsx: 0 };
+    for (const [key, object] of Object.entries(session?.objects || {})) {
+      if (Object.hasOwn(saved, object?.source) && object.source !== "xlsx" && detailUrlForObject(object) && results[key]?.status === "success") saved[object.source]++;
+    }
+    if (job.source === "xlsx") {
+      saved.xlsx = Object.keys(job.tasks).filter((key) => results[key]?.status === "success").length;
+    }
+    return publicState(job, Object.keys(results).filter((key) => key.startsWith("xlsx:") === (job.source === "xlsx")).length, baseCount, saved);
   }
 
   async function ensureWatchdog(active) {
@@ -192,10 +199,14 @@
     const maxAttempts = Math.min(5, Math.max(1, Number(options?.max_attempts) || 3));
     const delayMs = Math.min(15000, Math.max(300, Number(options?.delay_ms) || 1200));
 
-    const state = await serial(async () => {
+    await serial(async () => {
       const [previousJob, session, results] = await Promise.all([loadJob(), storageGet(SESSION_KEY), loadResults()]);
       if (["running", "paused", "blocked"].includes(previousJob.status)) {
         throw new Error("\u0414\u0440\u0443\u0433\u043e\u0439 \u0434\u043e\u0441\u0431\u043e\u0440 \u0443\u0436\u0435 \u0437\u0430\u043f\u0443\u0449\u0435\u043d");
+      }
+
+      if (workbook && (previousJob.source === "xlsx" || Object.keys(results).some((key) => key.startsWith("xlsx:"))) && !options.restartWorkbook) {
+        throw new Error("Подтвердите запуск XLSX заново. Для сохранения текущей очереди используйте «Продолжить досбор».");
       }
 
       const runId = `run_${Date.now()}_${Math.random().toString(36).slice(2, 8)}`;
@@ -209,7 +220,7 @@
         const previousTask = previousJob.tasks?.[objectKey];
         const include = workbook || scope === "all" ||
           (scope === "unprocessed" && existing?.status !== "success") ||
-          (scope === "errors" && (existing?.status === "error" || previousTask?.status === "error"));
+          (scope === "errors" && (["error", "partial", "captcha", "rate_limited"].includes(existing?.last_attempt_status || existing?.status) || previousTask?.status === "error"));
         if (!include) continue;
         tasks[objectKey] = {
           object_key: objectKey,
@@ -254,12 +265,11 @@
       } else {
         await saveJob(job);
       }
-      return job;
     });
 
     await ensureWatchdog(true);
     await pump();
-    return { ok: true, state: publicState(state, 0, { total: Object.keys(state.tasks).length, yandex: source === "yandex" ? Object.keys(state.tasks).length : 0, "2gis": source === "2gis" ? Object.keys(state.tasks).length : 0 }) };
+    return { ok: true, state: await getState() };
   }
 
   async function tabExists(tabId) {
@@ -272,14 +282,15 @@
     }
   }
 
-  function requeueWorkerTask(job, worker, reason) {
+  function requeueWorkerTask(job, worker, reason, interrupted = false) {
     const task = job.tasks?.[worker.current_object_key];
     if (task && ACTIVE_TASK_STATES.has(task.status)) {
+      if (interrupted) task.attempts = Math.max(0, task.attempts - 1);
       task.status = task.attempts >= job.settings.max_attempts ? "error" : "queued";
       task.error = reason;
       task.assigned_worker = "";
       task.assigned_at = "";
-      task.next_attempt_at = Date.now() + job.settings.delay_ms;
+      task.next_attempt_at = interrupted ? 0 : Date.now() + job.settings.delay_ms;
       if (task.status === "error") task.completed_at = nowIso();
     }
     worker.status = "idle";
@@ -343,7 +354,13 @@
       try {
         await api.tabs.update(assignment.tab_id, { url: assignment.task.url, active: false });
       } catch (error) {
-        await finishWithError(assignment.task.object_key, String(error?.message || error));
+        await finishWithError({
+          run_id: assignment.run_id,
+          object_key: assignment.task.object_key,
+          worker_id: assignment.task.assigned_worker,
+          attempt: assignment.task.attempts,
+          assigned_at: assignment.task.assigned_at
+        }, String(error?.message || error));
       }
     }
     if (!assignments.length) {
@@ -389,6 +406,7 @@
         org_id: task.org_id,
         source: task.source || job.source || "yandex",
         attempt: task.attempts,
+        assigned_at: task.assigned_at,
         timeout_ms: job.settings.timeout_ms
       };
     });
@@ -396,10 +414,11 @@
 
     try {
       const response = await api.tabs.sendMessage(tabId, payload);
-      if (response?.ok && response?.result) await finishSuccess(payload.object_key, response.result);
-      else if (response?.status === "captcha") await finishCaptcha(payload.object_key, response.url || "");
-      else if (response?.status === "rate_limited") await finishRateLimited(payload.object_key, response.url || "", response.error || "");
-      else await finishWithError(payload.object_key, response?.error || "\u041f\u0430\u0440\u0441\u0435\u0440 \u043d\u0435 \u0432\u0435\u0440\u043d\u0443\u043b \u0440\u0435\u0437\u0443\u043b\u044c\u0442\u0430\u0442");
+      if (response?.ok && response?.result) await finishSuccess(payload, response.result);
+      else if (response?.status === "captcha") await finishCaptcha(payload, response.url || "");
+      else if (response?.status === "rate_limited") await finishRateLimited(payload, response.url || "", response.error || "");
+      else if (response?.status === "partial" && response.result) await finishWithError(payload, response.error, response.result);
+      else await finishWithError(payload, response?.error || "\u041f\u0430\u0440\u0441\u0435\u0440 \u043d\u0435 \u0432\u0435\u0440\u043d\u0443\u043b \u0440\u0435\u0437\u0443\u043b\u044c\u0442\u0430\u0442");
     } catch (error) {
       await serial(async () => {
         const job = await loadJob();
@@ -415,11 +434,19 @@
     }
   }
 
-  async function finishSuccess(objectKey, result) {
+  function matchingAssignment(job, assignment) {
+    if (job.run_id !== assignment.run_id) return null;
+    const task = job.tasks[assignment.object_key];
+    return task && ACTIVE_TASK_STATES.has(task.status) && task.assigned_worker === assignment.worker_id &&
+      task.attempts === assignment.attempt && task.assigned_at === assignment.assigned_at ? task : null;
+  }
+
+  async function finishSuccess(assignment, result) {
     await serial(async () => {
       const [job, results, session] = await Promise.all([loadJob(), loadResults(), storageGet(SESSION_KEY)]);
-      const task = job.tasks[objectKey];
-      if (!task || task.status === "success") return;
+      const { object_key: objectKey } = assignment;
+      const task = matchingAssignment(job, assignment);
+      if (!task) return;
       results[objectKey] = {
         ...result,
         object_key: objectKey,
@@ -452,30 +479,47 @@
     await pump();
   }
 
-  async function finishWithError(objectKey, errorText) {
+  function failedResult(previous, task, status, url = task.url) {
+    if (previous?.status === "success" || previous?.status === "partial") {
+      return { ...previous, last_attempt_status: status, last_attempt_error: task.error };
+    }
+    return {
+      object_key: task.object_key,
+      org_id: task.org_id,
+      source_url: url,
+      status,
+      error: task.error,
+      attempts: task.attempts,
+      enriched_at: nowIso()
+    };
+  }
+
+  async function finishWithError(assignment, errorText, partial) {
     await serial(async () => {
       const [job, results] = await Promise.all([loadJob(), loadResults()]);
-      const task = job.tasks[objectKey];
-      if (!task || ["success", "error", "captcha", "rate_limited"].includes(task.status)) return;
+      const { object_key: objectKey } = assignment;
+      const task = matchingAssignment(job, assignment);
+      if (!task) return;
       const worker = job.workers.find((item) => item.worker_id === task.assigned_worker);
       task.error = String(errorText || "\u041d\u0435\u0438\u0437\u0432\u0435\u0441\u0442\u043d\u0430\u044f \u043e\u0448\u0438\u0431\u043a\u0430");
       task.assigned_worker = "";
       task.assigned_at = "";
       if (task.attempts < job.settings.max_attempts) {
+        if (partial && results[objectKey]?.status !== "success") {
+          results[objectKey] = { ...partial, ...failedResult(null, task, "partial") };
+          await storageSet(RESULTS_KEY, results);
+        }
         task.status = "queued";
         task.next_attempt_at = Date.now() + job.settings.delay_ms;
       } else {
         task.status = "error";
         task.completed_at = nowIso();
-        results[objectKey] = {
-          object_key: objectKey,
-          org_id: task.org_id,
-          source_url: task.url,
-          status: "error",
-          error: task.error,
-          attempts: task.attempts,
-          enriched_at: nowIso()
-        };
+        const previous = results[objectKey];
+        results[objectKey] = previous?.status === "success"
+          ? failedResult(previous, task, "error")
+          : partial || previous?.status === "partial"
+            ? { ...(partial || previous), ...failedResult(null, task, "partial") }
+            : failedResult(previous, task, "error");
         await storageSet(RESULTS_KEY, results);
       }
       if (worker) {
@@ -493,23 +537,16 @@
     }
   }
 
-  async function finishCaptcha(objectKey, url) {
+  async function finishCaptcha(assignment, url) {
     await serial(async () => {
       const [job, results] = await Promise.all([loadJob(), loadResults()]);
-      const task = job.tasks[objectKey];
+      const { object_key: objectKey } = assignment;
+      const task = matchingAssignment(job, assignment);
       if (!task) return;
       task.status = "captcha";
       task.error = "CAPTCHA";
       task.completed_at = nowIso();
-      results[objectKey] = {
-        object_key: objectKey,
-        org_id: task.org_id,
-        source_url: url || task.url,
-        status: "captcha",
-        error: "CAPTCHA",
-        attempts: task.attempts,
-        enriched_at: nowIso()
-      };
+      results[objectKey] = failedResult(results[objectKey], task, "captcha", url || task.url);
       await storageSet(RESULTS_KEY, results);
       const worker = job.workers.find((item) => item.worker_id === task.assigned_worker);
       if (worker) worker.status = "captcha";
@@ -518,24 +555,17 @@
     });
   }
 
-  async function finishRateLimited(objectKey, url, errorText) {
+  async function finishRateLimited(assignment, url, errorText) {
     await serial(async () => {
       const [job, results] = await Promise.all([loadJob(), loadResults()]);
-      const task = job.tasks[objectKey];
+      const { object_key: objectKey } = assignment;
+      const task = matchingAssignment(job, assignment);
       if (!task) return;
       const error = String(errorText || "\u042f\u043d\u0434\u0435\u043a\u0441 \u0432\u0440\u0435\u043c\u0435\u043d\u043d\u043e \u043e\u0433\u0440\u0430\u043d\u0438\u0447\u0438\u043b \u0437\u0430\u0433\u0440\u0443\u0437\u043a\u0443 \u0441\u0442\u0440\u0430\u043d\u0438\u0446");
       task.status = "rate_limited";
       task.error = error;
       task.completed_at = nowIso();
-      results[objectKey] = {
-        object_key: objectKey,
-        org_id: task.org_id,
-        source_url: url || task.url,
-        status: "rate_limited",
-        error,
-        attempts: task.attempts,
-        enriched_at: nowIso()
-      };
+      results[objectKey] = failedResult(results[objectKey], task, "rate_limited", url || task.url);
       await storageSet(RESULTS_KEY, results);
       const worker = job.workers.find((item) => item.worker_id === task.assigned_worker);
       if (worker) worker.status = "rate_limited";
@@ -584,7 +614,7 @@
   async function stopJob() {
     const tabIds = await serial(async () => {
       const job = await loadJob();
-      for (const worker of job.workers) requeueWorkerTask(job, worker, "\u041e\u0441\u0442\u0430\u043d\u043e\u0432\u043b\u0435\u043d\u043e \u043f\u043e\u043b\u044c\u0437\u043e\u0432\u0430\u0442\u0435\u043b\u0435\u043c");
+      for (const worker of job.workers) requeueWorkerTask(job, worker, "\u041e\u0441\u0442\u0430\u043d\u043e\u0432\u043b\u0435\u043d\u043e \u043f\u043e\u043b\u044c\u0437\u043e\u0432\u0430\u0442\u0435\u043b\u0435\u043c", true);
       job.status = "stopped";
       await saveJob(job);
       return job.workers.map((worker) => worker.tab_id).filter(Number.isInteger);

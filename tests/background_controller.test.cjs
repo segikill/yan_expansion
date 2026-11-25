@@ -112,6 +112,14 @@ function message(message, sender = {}) {
   });
 }
 
+async function waitForJob(status) {
+  const deadline = Date.now() + 2000;
+  while (storage[JOB_KEY].status !== status && Date.now() < deadline) {
+    await new Promise((resolve) => setTimeout(resolve, 20));
+  }
+  assert.equal(storage[JOB_KEY].status, status);
+}
+
 (async () => {
   const start = await message({
     type: "ENRICHMENT_START",
@@ -134,6 +142,50 @@ function message(message, sender = {}) {
   assert.equal(storage[JOB_KEY].status, "completed");
   assert.equal(storage[JOB_KEY].totals.success, 1);
   assert.equal(storage[RESULTS_KEY]["yandex:1234567890"].status, "success");
+
+  const originalResponse = workerResponse;
+  const savedDetails = structuredClone(storage[RESULTS_KEY]["yandex:1234567890"]);
+  workerResponse = { ok: false, error: "Timed out" };
+  const repeatOptions = { scope: "all", workers: 1, max_attempts: 1 };
+  assert.equal((await message({ type: "ENRICHMENT_START", options: repeatOptions })).ok, true);
+  assert.equal((await message({ type: "ENRICHMENT_GET_STATE" })).saved_counts.yandex, 1);
+  assert.equal(storage[JOB_KEY].totals.success, 0);
+  tabsUpdatedHandler(storage[JOB_KEY].workers[0].tab_id, { status: "complete" });
+  await waitForJob("completed");
+  assert.equal(storage[JOB_KEY].totals.error, 1);
+  assert.deepEqual(storage[RESULTS_KEY]["yandex:1234567890"], {
+    ...savedDetails, last_attempt_status: "error", last_attempt_error: "Timed out"
+  });
+  assert.equal((await message({ type: "ENRICHMENT_GET_STATE" })).saved_counts.yandex, 1);
+
+  workerResponse = originalResponse;
+  assert.equal((await message({ type: "ENRICHMENT_START", options: { ...repeatOptions, scope: "errors" } })).ok, true);
+  assert.equal((await message({ type: "ENRICHMENT_STOP" })).ok, true);
+  assert.equal(storage[RESULTS_KEY]["yandex:1234567890"].title, savedDetails.title);
+  assert.equal((await message({ type: "ENRICHMENT_RESUME" })).ok, true);
+  tabsUpdatedHandler(storage[JOB_KEY].workers[0].tab_id, { status: "complete" });
+  await waitForJob("completed");
+  assert.equal(storage[JOB_KEY].totals.success, 1);
+  assert.deepEqual(storage[RESULTS_KEY]["yandex:1234567890"], savedDetails);
+
+  const fileOptions = {
+    ...repeatOptions,
+    workbook: { data: "fixture", name: "hotels.xlsx", sheet: "Hotels", column: 0 },
+    links: [{ row: 1, url: "https://yandex.ru/maps/org/test/1234567890/" }]
+  };
+  assert.equal((await message({ type: "ENRICHMENT_START", options: fileOptions })).ok, true);
+  tabsUpdatedHandler(storage[JOB_KEY].workers[0].tab_id, { status: "complete" });
+  await waitForJob("completed");
+  assert.equal((await message({ type: "ENRICHMENT_GET_STATE" })).saved_counts.xlsx, 1);
+  const fileRun = storage[JOB_KEY].run_id;
+  assert.equal((await message({ type: "ENRICHMENT_START", options: fileOptions })).ok, false);
+  assert.equal(storage[JOB_KEY].run_id, fileRun);
+  assert.equal((await message({ type: "ENRICHMENT_GET_STATE" })).saved_counts.xlsx, 1);
+  assert.equal((await message({ type: "ENRICHMENT_START", options: { ...fileOptions, restartWorkbook: true } })).ok, true);
+  assert.notEqual(storage[JOB_KEY].run_id, fileRun);
+  assert.equal((await message({ type: "ENRICHMENT_GET_STATE" })).saved_counts.xlsx, 0);
+  assert.deepEqual(storage[RESULTS_KEY]["yandex:1234567890"], savedDetails);
+  assert.equal((await message({ type: "ENRICHMENT_FORCE_RESET", importOnly: true })).ok, true);
 
   storage[SESSION_KEY].objects = {
     "yandex:9876543210": {
