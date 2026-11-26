@@ -513,46 +513,82 @@
     for (const task of Object.values(job.tasks)) {
       for (const row of task.rows || []) byRow.set(row, task);
     }
-    const columns = Object.keys(detailRow({}, {}));
-    const existing = new Set();
-    let latitudeColumn = -1;
-    let longitudeColumn = -1;
-    for (let c = range.s.c; c <= range.e.c; c++) {
-      const name = String(sheet[XLSX.utils.encode_cell({ r: range.s.r, c })]?.v ?? "");
-      existing.add(name);
-      const label = name.trim().toLowerCase();
-      if (latitudeColumn < 0 && /^(lat|latitude|широта)$/.test(label)) latitudeColumn = c;
-      if (longitudeColumn < 0 && /^(lon|lng|longitude|долгота)$/.test(label)) longitudeColumn = c;
-    }
-    const headers = columns.map((name) => {
-      let label = name;
-      for (let index = 1; existing.has(label); index++) label = `Досбор — ${name}${index > 1 ? ` (${index})` : ""}`;
-      existing.add(label);
-      return label;
-    });
-    const output = [headers];
-    for (let r = range.s.r + 1; r <= range.e.r; r++) {
-      const task = byRow.get(r);
-      const cell = sheet[XLSX.utils.encode_cell({ r, c: imported.column })];
-      const detail = task ? response.results[task.object_key] || task : {};
-      const row = task ? detailRow({ source: task.source }, detail) : {};
-      const existingPair = latitudeColumn >= 0 && longitudeColumn >= 0
-        ? importedCoordinatePair(
-          sheet[XLSX.utils.encode_cell({ r, c: latitudeColumn })]?.v,
-          sheet[XLSX.utils.encode_cell({ r, c: longitudeColumn })]?.v
-        )
-        : null;
-      const coordinates = existingPair || importedCoordinatePair(detail.lat, detail.lon);
-      row["Широта"] = coordinates?.lat ?? "";
-      row["Долгота"] = coordinates?.lon ?? "";
-      if (!task) row["Статус досбора"] = String(cell?.l?.Target || cell?.v || "").trim()
-        ? "неподдерживаемая ссылка" : "нет ссылки";
-      output.push(columns.map((name) => Array.isArray(row[name]) ? row[name].join(" | ") : row[name] ?? ""));
-    }
-    XLSX.utils.sheet_add_aoa(sheet, output, { origin: { r: range.s.r, c: range.e.c + 1 } });
+    fillImportedSheet(sheet, range, imported.column, byRow, response.results);
     const filename = `${safeFilePart(imported.name.replace(/\.xlsx$/i, ""))}_досбор.xlsx`;
     XLSX.writeFileXLSX(book, filename, { compression: true });
     setStatus(`Скачан ${filename}`);
+  }
+
+  function fillImportedSheet(sheet, range, linkColumn, byRow, results) {
+    const aliases = {
+      "Источник": ["source"],
+      "ID объекта": ["org_id"],
+      "Название": ["title"],
+      "Адрес": ["address"],
+      "Рейтинг": ["rating"],
+      "Количество отзывов": ["reviews"],
+      "Количество фотографий": ["photos_count"],
+      "Широта": ["lat", "latitude"],
+      "Долгота": ["lon", "lng", "longitude"]
+    };
+    const normalize = (name) => String(name ?? "").trim().toLowerCase()
+      .replace(/ё/g, "е").replace(/\s*[-–—]\s*/g, " — ").replace(/\s+/g, " ");
+    const headerColumns = new Map();
+    const cellAddress = (r, c) => XLSX.utils.encode_cell({ r, c });
+    for (let c = range.s.c; c <= range.e.c; c++) {
+      const label = normalize(sheet[cellAddress(range.s.r, c)]?.v);
+      if (label && !headerColumns.has(label)) headerColumns.set(label, c);
+    }
+
+    const fields = Object.keys(detailRow({}, {}));
+    const columns = new Map();
+    const added = [];
+    for (const name of fields) {
+      const labels = [name, ...(aliases[name] || [])].map(normalize);
+      const existing = labels.map((label) => headerColumns.get(label)).find(Number.isInteger);
+      let column = existing ?? headerColumns.get(normalize(`Досбор — ${name}`));
+      if (column === undefined) {
+        column = range.e.c + 1 + added.length;
+        added.push(name);
+      }
+      columns.set(name, column);
+    }
+    if (added.length) {
+      XLSX.utils.sheet_add_aoa(sheet, [added], { origin: { r: range.s.r, c: range.e.c + 1 } });
+    }
+
+    const latColumn = columns.get("Широта");
+    const lonColumn = columns.get("Долгота");
+    const isBlank = (value) => value == null || (typeof value === "string" && !value.trim());
+    for (let r = range.s.r + 1; r <= range.e.r; r++) {
+      const task = byRow.get(r);
+      const link = sheet[cellAddress(r, linkColumn)];
+      const detail = task ? results[task.object_key] || task : {};
+      const row = task ? detailRow({ source: task.source }, detail) : {};
+      const coordinates = importedCoordinatePair(detail.lat, detail.lon);
+      row["Широта"] = coordinates?.lat;
+      row["Долгота"] = coordinates?.lon;
+      const oldLat = sheet[cellAddress(r, latColumn)]?.v;
+      const oldLon = sheet[cellAddress(r, lonColumn)]?.v;
+      const zeroPair = !isBlank(oldLat) && !isBlank(oldLon) && Number(oldLat) === 0 && Number(oldLon) === 0;
+      if (!task) row["Статус досбора"] = String(link?.l?.Target || link?.v || "").trim()
+        ? "неподдерживаемая ссылка" : "нет ссылки";
+
+      for (const [name, rawValue] of Object.entries(row)) {
+        const value = Array.isArray(rawValue) ? rawValue.join(" | ") : rawValue;
+        const address = cellAddress(r, columns.get(name));
+        const old = sheet[address];
+        const isService = name === "Статус досбора" || name === "Ошибка досбора";
+        const replaceZero = zeroPair && (name === "Широта" || name === "Долгота");
+        if (old?.f || old?.F || (isBlank(value) && (!isService || !task || isBlank(old?.v)))) continue;
+        if (!isService && !replaceZero && (!isBlank(old?.v) || old?.l)) continue;
+        const next = { ...old, t: typeof value === "number" ? "n" : typeof value === "boolean" ? "b" : "s", v: value ?? "" };
+        delete next.w;
+        delete next.h;
+        delete next.r;
+        sheet[address] = next;
+      }
+    }
   }
 
   function detailRow(base, detail) {
