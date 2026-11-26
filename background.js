@@ -140,7 +140,7 @@
   }
 
   function publicState(job, resultCount, baseCount, savedCounts) {
-    return { job, result_count: resultCount, base_count: baseCount.total, base_counts: baseCount, saved_counts: savedCounts, controller_version: "1.12.11" };
+    return { job, result_count: resultCount, base_count: baseCount.total, base_counts: baseCount, saved_counts: savedCounts, controller_version: "1.12.12" };
   }
 
   async function getState() {
@@ -195,7 +195,7 @@
     const source = workbook ? "xlsx" : options?.source === "2gis" ? "2gis" : "yandex";
     const scope = ["unprocessed", "all", "errors"].includes(options?.scope) ? options.scope : "unprocessed";
     const requestedWorkers = Number(options?.workers ?? 2);
-    const workersCount = Math.min(8, Math.max(1, Number.isFinite(requestedWorkers) ? Math.trunc(requestedWorkers) : 2));
+    const workersCount = Math.min(16, Math.max(1, Number.isFinite(requestedWorkers) ? Math.trunc(requestedWorkers) : 2));
     const timeoutMs = Math.min(90000, Math.max(10000, Number(options?.timeout_ms) || 25000));
     const maxAttempts = Math.min(5, Math.max(1, Number(options?.max_attempts) || 3));
     const delayMs = Math.min(15000, Math.max(300, Number(options?.delay_ms) || 1200));
@@ -757,13 +757,15 @@
     return { ok: true, tab_id: tab.id };
   }
 
-  function workerWindowBounds(area, limit = 8) {
+  function workerWindowBounds(area, limit) {
     const { left, top, width, height } = area || {};
     if (![left, top, width, height].every(Number.isInteger) ||
-        width < 520 || height < 320 || width > 32768 || height > 32768) return [];
+        width < 420 || height < 260 || width > 32768 || height > 32768) return [];
     const gap = 12;
-    const tileWidth = 520;
-    const tileHeight = 320;
+    const fitsStandard = Math.floor((width + gap) / (520 + gap)) *
+      Math.floor((height + gap) / (320 + gap)) >= limit;
+    const tileWidth = fitsStandard ? 520 : 420;
+    const tileHeight = fitsStandard ? 320 : 260;
     const columns = Math.floor((width + gap) / (tileWidth + gap));
     const rows = Math.floor((height + gap) / (tileHeight + gap));
     return Array.from({ length: Math.min(limit, columns * rows) }, (_, index) => ({
@@ -786,14 +788,14 @@
     if (sender.url?.split(/[?#]/)[0] !== api.runtime.getURL("enrichment.html")) {
       throw new Error("Раскладка доступна из окна досбора.");
     }
-    const bounds = workerWindowBounds(area, withSummary ? 9 : 8);
-    if (!bounds.length) throw new Error("На этом экране недостаточно места для рабочего окна.");
     // Read the queue only. Moving tabs keeps their IDs and in-flight work.
     const job = await loadJob();
     const tabs = job.workers.map((worker) => worker.tab_id).filter(Number.isInteger);
     if (!tabs.length || !["running", "paused", "blocked"].includes(job.status)) {
       throw new Error("Сначала запустите досбор.");
     }
+    const bounds = workerWindowBounds(area, tabs.length + Number(withSummary));
+    if (!bounds.length) throw new Error("На этом экране недостаточно места для рабочего окна.");
     let summaryOpened = false;
     let summaryError = "";
     if (withSummary) {
