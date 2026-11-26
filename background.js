@@ -52,6 +52,8 @@
       started_at: "",
       completed_at: "",
       source: "yandex",
+      last_saved_at: "",
+      journal: [],
       settings: { workers: 2, timeout_ms: 25000, max_attempts: 3, delay_ms: 1200 },
       tasks: {},
       workers: [],
@@ -67,6 +69,7 @@
       ...raw,
       settings: { ...base.settings, ...(raw.settings || {}) },
       tasks: raw.tasks && typeof raw.tasks === "object" ? raw.tasks : {},
+      journal: Array.isArray(raw.journal) ? raw.journal.slice(-100) : [],
       workers: Array.isArray(raw.workers) ? raw.workers : [],
       totals: { ...base.totals, ...(raw.totals || {}) }
     };
@@ -140,7 +143,7 @@
   }
 
   function publicState(job, resultCount, baseCount, savedCounts) {
-    return { job, result_count: resultCount, base_count: baseCount.total, base_counts: baseCount, saved_counts: savedCounts, controller_version: "1.12.12" };
+    return { job, result_count: resultCount, base_count: baseCount.total, base_counts: baseCount, saved_counts: savedCounts, controller_version: "1.12.13" };
   }
 
   async function getState() {
@@ -190,12 +193,12 @@
     return objects;
   }
 
-  async function startJob(options) {
+  async function startJob(options, area, sender) {
     const workbook = options?.workbook;
     const source = workbook ? "xlsx" : options?.source === "2gis" ? "2gis" : "yandex";
     const scope = ["unprocessed", "all", "errors"].includes(options?.scope) ? options.scope : "unprocessed";
     const requestedWorkers = Number(options?.workers ?? 2);
-    const workersCount = Math.min(16, Math.max(1, Number.isFinite(requestedWorkers) ? Math.trunc(requestedWorkers) : 2));
+    const workersCount = Math.min(12, Math.max(1, Number.isFinite(requestedWorkers) ? Math.trunc(requestedWorkers) : 2));
     const timeoutMs = Math.min(90000, Math.max(10000, Number(options?.timeout_ms) || 25000));
     const maxAttempts = Math.min(5, Math.max(1, Number(options?.max_attempts) || 3));
     const delayMs = Math.min(15000, Math.max(300, Number(options?.delay_ms) || 1200));
@@ -278,8 +281,18 @@
     });
 
     await ensureWatchdog(true);
+    const opened = await restoreWorkingLayout(area, sender);
     await pump();
-    return { ok: true, state: await getState() };
+    return { ok: true, state: await getState(), ...opened };
+  }
+
+  async function restoreWorkingLayout(area, sender) {
+    if (!area) return {};
+    try {
+      return { layout: await serial(() => startWorkerRotation(area, sender, true)), layout_error: "" };
+    } catch (error) {
+      return { layout_error: String(error?.message || error) };
+    }
   }
 
   async function tabExists(tabId) {
@@ -298,12 +311,26 @@
     worker.stage_started_at = Date.now();
   }
 
+  const firstActivationByWorker = new Map();
+
+  function recordEvent(job, type, task, reason = "", timings) {
+    const activation = firstActivationByWorker.get(task.assigned_worker);
+    const activationWait = activation?.runId === job.run_id && activation.assignedAt === task.assigned_at
+      ? Math.max(0, activation.at - Date.parse(task.assigned_at)) : null;
+    job.journal.push({
+      at: nowIso(), type, object_key: task.object_key, worker_id: task.assigned_worker, reason,
+      ...(timings ? { timings: { ...timings, activation_wait_ms: activationWait } } : {})
+    });
+    if (job.journal.length > 100) job.journal.shift();
+  }
+
   function requeueWorkerTask(job, worker, reason, interrupted = false) {
     const task = job.tasks?.[worker.current_object_key];
     if (task && ACTIVE_TASK_STATES.has(task.status)) {
       if (interrupted) task.attempts = Math.max(0, task.attempts - 1);
       task.status = task.attempts >= job.settings.max_attempts ? "error" : "queued";
       task.error = reason;
+      recordEvent(job, task.status, task, reason);
       task.assigned_worker = "";
       task.assigned_at = "";
       task.next_attempt_at = interrupted ? 0 : Date.now() + job.settings.delay_ms;
@@ -313,6 +340,12 @@
     worker.current_object_key = "";
     worker.last_error = reason;
   }
+
+  const launchBatchSize = 4;
+  const launchIntervalMs = 400;
+  let nextLaunchAt = 0;
+  let launchRunId = "";
+  let launchTimer;
 
   async function pump() {
     const assignments = await serial(async () => {
@@ -332,27 +365,64 @@
           requeueWorkerTask(job, worker, "\u0424\u043e\u043d\u043e\u0432\u0430\u044f \u0432\u043a\u043b\u0430\u0434\u043a\u0430 \u0431\u044b\u043b\u0430 \u0437\u0430\u043a\u0440\u044b\u0442\u0430");
           worker.tab_id = null;
         }
-        if (!worker.tab_id) {
-          const tab = await api.tabs.create({ url: "about:blank", active: false });
-          worker.tab_id = tab.id;
-        }
       }
 
-      const readyTasks = Object.values(job.tasks).filter((task) => task.status === "queued" && Number(task.next_attempt_at || 0) <= Date.now());
+      if (launchRunId !== job.run_id) {
+        clearTimeout(launchTimer);
+        launchTimer = undefined;
+        launchRunId = job.run_id;
+        nextLaunchAt = 0;
+      }
+      const now = Date.now();
+      const readyTasks = Object.values(job.tasks).filter((task) => task.status === "queued" && Number(task.next_attempt_at || 0) <= now);
       const assignments = [];
-      for (const worker of job.workers) {
-        if (worker.current_object_key || worker.status !== "idle") continue;
-        const task = readyTasks.shift();
-        if (!task) break;
+      const idleWorkers = job.workers.filter((worker) => !worker.current_object_key && worker.status === "idle");
+      if (readyTasks.length && idleWorkers.length && now < nextLaunchAt) {
+        if (!launchTimer) {
+          launchTimer = setTimeout(() => {
+            launchTimer = undefined;
+            pump().catch(() => {});
+          }, nextLaunchAt - now);
+        }
+      }
+      const batchSize = now >= nextLaunchAt ? Math.min(launchBatchSize, idleWorkers.length, readyTasks.length) : 0;
+      for (let index = 0; index < batchSize; index++) {
+        const worker = idleWorkers[index];
+        const task = readyTasks[index];
+        if (!worker.tab_id) {
+          const workerIndex = job.workers.indexOf(worker);
+          const lane = rotation?.runId === job.run_id && !rotation.closing
+            ? rotation.lanes.find(({ first, last }) => workerIndex >= first && workerIndex < last) : null;
+          const props = { url: "about:blank", active: false };
+          let tab;
+          if (lane) {
+            tab = await api.tabs.create({ ...props, windowId: lane.windowId }).catch(() => null);
+            if (tab) lane.ownedTabs.add(tab.id);
+          }
+          tab ||= await api.tabs.create(props);
+          worker.tab_id = tab.id;
+        }
         task.status = "navigating";
         task.attempts += 1;
         task.assigned_worker = worker.worker_id;
         task.assigned_at = nowIso();
+        firstActivationByWorker.delete(worker.worker_id);
         task.error = "";
         setWorkerStage(worker, "navigating");
         worker.current_object_key = task.object_key;
         worker.last_error = "";
+        recordEvent(job, "assigned", task);
         assignments.push({ tab_id: worker.tab_id, task: { ...task }, run_id: job.run_id, settings: { ...job.settings } });
+      }
+
+      if (assignments.length) {
+        nextLaunchAt = Date.now() + (job.workers.length > launchBatchSize ? launchIntervalMs : 0);
+        if (idleWorkers.length > batchSize && readyTasks.length > batchSize && !launchTimer) {
+          launchTimer = setTimeout(() => {
+            launchTimer = undefined;
+            pump().catch(() => {});
+          }, launchIntervalMs);
+        }
       }
 
       const hasActive = job.workers.some((worker) => worker.current_object_key);
@@ -383,9 +453,10 @@
       const job = await loadJob();
       if (job.status === "completed") {
         await ensureWatchdog(false);
+        const { closed } = await closeRotationWindows(job.run_id);
         const completedTabs = job.workers.map((worker) => worker.tab_id).filter(Number.isInteger);
-        if (completedTabs.length) {
-          try { await api.tabs.remove(completedTabs); } catch {}
+        if (completedTabs.some((id) => !closed.has(id))) {
+          try { await api.tabs.remove(completedTabs.filter((id) => !closed.has(id))); } catch {}
         }
       }
     }
@@ -404,6 +475,8 @@
     });
   }
 
+  const pendingParses = new Map();
+
   async function dispatchForTab(tabId, allowRepeat = false) {
     const payload = await serial(async () => {
       const job = await loadJob();
@@ -411,10 +484,14 @@
       if (!worker?.current_object_key || !["running", "paused"].includes(job.status)) return null;
       const task = job.tasks[worker.current_object_key];
       if (!task || (task.status === "parsing" && !allowRepeat) || !ACTIVE_TASK_STATES.has(task.status)) return null;
+      const key = [job.run_id, task.object_key, task.attempts, task.assigned_at].join(":");
+      if (pendingParses.get(tabId) === key) return null;
       task.status = "parsing";
       setWorkerStage(worker, "parsing");
       await saveJob(job);
+      pendingParses.set(tabId, key);
       return {
+        key,
         type: "ENRICHMENT_PARSE_DETAIL",
         run_id: job.run_id,
         worker_id: worker.worker_id,
@@ -430,23 +507,25 @@
 
     try {
       const response = await api.tabs.sendMessage(tabId, payload);
-      if (response?.ok && response?.result) await finishSuccess(payload, response.result);
+      if (response?.ok && response?.result) await finishSuccess(payload, response.result, response.timings);
       else if (response?.status === "captcha") await finishCaptcha(payload, response.url || "");
       else if (response?.status === "rate_limited") await finishRateLimited(payload, response.url || "", response.error || "");
-      else if (response?.status === "partial" && response.result) await finishWithError(payload, response.error, response.result);
+      else if (response?.status === "partial" && response.result) await finishWithError(payload, response.error, response.result, response.timings);
       else await finishWithError(payload, response?.error || "\u041f\u0430\u0440\u0441\u0435\u0440 \u043d\u0435 \u0432\u0435\u0440\u043d\u0443\u043b \u0440\u0435\u0437\u0443\u043b\u044c\u0442\u0430\u0442");
     } catch (error) {
       await serial(async () => {
         const job = await loadJob();
         const worker = job.workers.find((item) => item.tab_id === tabId);
         const task = worker && job.tasks[worker.current_object_key];
-        if (task?.object_key === payload.object_key && task.status === "parsing") {
+        if (matchingAssignment(job, payload) === task && task?.status === "parsing") {
           task.status = "waiting_dom";
           setWorkerStage(worker, "waiting_dom");
           worker.last_error = String(error?.message || error);
           await saveJob(job);
         }
       });
+    } finally {
+      if (pendingParses.get(tabId) === payload.key) pendingParses.delete(tabId);
     }
   }
 
@@ -457,7 +536,7 @@
       task.attempts === assignment.attempt && task.assigned_at === assignment.assigned_at ? task : null;
   }
 
-  async function finishSuccess(assignment, result) {
+  async function finishSuccess(assignment, result, timings) {
     await serial(async () => {
       const [job, results, session] = await Promise.all([loadJob(), loadResults(), storageGet(SESSION_KEY)]);
       const { object_key: objectKey } = assignment;
@@ -479,9 +558,10 @@
         session.updated_at = nowIso();
         storagePatch[SESSION_KEY] = session;
       }
-      await storageSetMany(storagePatch);
       task.status = "success";
       task.completed_at = nowIso();
+      job.last_saved_at = task.completed_at;
+      recordEvent(job, "saved", task, "", timings);
       task.error = "";
       const worker = job.workers.find((item) => item.worker_id === task.assigned_worker);
       if (worker) {
@@ -490,7 +570,8 @@
         worker.processed = Number(worker.processed || 0) + 1;
       }
       task.assigned_worker = "";
-      await saveJob(job);
+      recalculateTotals(job);
+      await storageSetMany({ ...storagePatch, [JOB_KEY]: job });
     });
     await pump();
   }
@@ -510,7 +591,7 @@
     };
   }
 
-  async function finishWithError(assignment, errorText, partial) {
+  async function finishWithError(assignment, errorText, partial, timings) {
     await serial(async () => {
       const [job, results] = await Promise.all([loadJob(), loadResults()]);
       const { object_key: objectKey } = assignment;
@@ -518,6 +599,7 @@
       if (!task) return;
       const worker = job.workers.find((item) => item.worker_id === task.assigned_worker);
       task.error = String(errorText || "\u041d\u0435\u0438\u0437\u0432\u0435\u0441\u0442\u043d\u0430\u044f \u043e\u0448\u0438\u0431\u043a\u0430");
+      recordEvent(job, task.attempts < job.settings.max_attempts ? "retry" : "error", task, task.error, timings);
       task.assigned_worker = "";
       task.assigned_at = "";
       if (task.attempts < job.settings.max_attempts) {
@@ -560,6 +642,7 @@
       const task = matchingAssignment(job, assignment);
       if (!task) return;
       task.status = "captcha";
+      recordEvent(job, "captcha", task);
       task.error = "CAPTCHA";
       task.completed_at = nowIso();
       results[objectKey] = failedResult(results[objectKey], task, "captcha", url || task.url);
@@ -579,6 +662,7 @@
       if (!task) return;
       const error = String(errorText || "\u042f\u043d\u0434\u0435\u043a\u0441 \u0432\u0440\u0435\u043c\u0435\u043d\u043d\u043e \u043e\u0433\u0440\u0430\u043d\u0438\u0447\u0438\u043b \u0437\u0430\u0433\u0440\u0443\u0437\u043a\u0443 \u0441\u0442\u0440\u0430\u043d\u0438\u0446");
       task.status = "rate_limited";
+      recordEvent(job, "rate_limited", task);
       task.error = error;
       task.completed_at = nowIso();
       results[objectKey] = failedResult(results[objectKey], task, "rate_limited", url || task.url);
@@ -599,7 +683,7 @@
     });
   }
 
-  async function resumeJob(source) {
+  async function resumeJob(source, area, sender) {
     const result = await serial(async () => {
       let job = await loadJob();
       if (source === "xlsx" && job.source !== "xlsx") {
@@ -629,16 +713,23 @@
         }
       }
       job.status = "running";
+      job.pause_reason = "";
       job.completed_at = "";
       await saveJob(job);
       return { ok: true };
     });
     await ensureWatchdog(true);
+    const opened = await restoreWorkingLayout(area, sender);
     await pump();
-    return result;
+    return { ...result, ...opened };
   }
 
+  let pendingStops = 0;
+
   async function stopJob() {
+    pendingStops++;
+    const requestedRotation = rotation;
+    if (requestedRotation) requestedRotation.closing = true;
     return serial(async () => {
       const job = await loadJob();
       const tabIds = job.workers.map((worker) => worker.tab_id).filter(Number.isInteger);
@@ -646,36 +737,36 @@
       job.status = "stopped";
       job.completed_at = nowIso();
       await saveJob(job);
-      await ensureWatchdog(false);
-
-      const failed = await Promise.allSettled(tabIds.map(async (tabId) => {
-        const tab = await api.tabs.get(tabId).catch(() => null);
-        if (!tab) return;
+      const closeOne = async (tab, isSummary = false) => {
         const window = await api.windows?.get(tab.windowId, { populate: true }).catch(() => null);
-        if (window?.tabs?.length === 1 && window.tabs[0].id === tabId &&
-            (window.type === "popup" || arrangedWorkerWindowIds.has(window.id))) {
+        if (window?.tabs?.length === 1 && window.tabs[0].id === tab.id &&
+            (isSummary || window.type === "popup" || arrangedWorkerWindowIds.has(window.id))) {
           try {
             await api.windows.remove(window.id);
             return;
           } catch {
-            // Fall back to closing the tab if the browser rejects closing the window.
+            // Fall back to closing the tab if closing the window is rejected.
           }
         }
-        await api.tabs.remove(tabId);
-      }));
-      for (const tab of await summaryTabs()) {
-        const window = await api.windows.get(tab.windowId, { populate: true }).catch(() => null);
-        if (window?.tabs?.length === 1 && window.tabs[0].id === tab.id) {
-          await api.windows.remove(window.id);
-        } else {
-          await api.tabs.remove(tab.id);
-        }
-      }
-      if (failed.some((result) => result.status === "rejected")) {
+        await api.tabs.remove(tab.id);
+      };
+
+      const mode = requestedRotation?.runId === job.run_id ? requestedRotation : rotation;
+      const keepSummary = mode?.runId === job.run_id;
+      const { closed, pending } = await closeRotationWindows(job.run_id, mode);
+      const failed = await Promise.allSettled([
+        ensureWatchdog(false),
+        ...tabIds.filter((id) => !closed.has(id)).map(async (tabId) => {
+          const tab = await api.tabs.get(tabId).catch(() => null);
+          if (tab) await closeOne(tab);
+        }),
+        ...(keepSummary ? [] : [summaryTabs().then((tabs) => Promise.all(tabs.map((tab) => closeOne(tab, true))))])
+      ]);
+      if (pending.length || failed.some((result) => result.status === "rejected")) {
         throw new Error("Досбор остановлен. Некоторые рабочие вкладки не удалось закрыть.");
       }
       return { ok: true };
-    });
+    }).finally(() => { pendingStops--; });
   }
 
   async function forceResetEnrichment(importOnly) {
@@ -696,7 +787,7 @@
     return { ok: true, ...(await getState()) };
   }
 
-  async function retryErrors() {
+  async function retryErrors(area, sender) {
     await serial(async () => {
       const job = await loadJob();
       let changed = 0;
@@ -720,12 +811,14 @@
       }
       if (!changed) throw new Error("\u041d\u0435\u0442 \u043e\u0448\u0438\u0431\u043e\u043a \u0434\u043b\u044f \u043f\u043e\u0432\u0442\u043e\u0440\u0430");
       job.status = "running";
+      job.pause_reason = "";
       job.completed_at = "";
       await saveJob(job);
     });
     await ensureWatchdog(true);
+    const opened = await restoreWorkingLayout(area, sender);
     await pump();
-    return { ok: true };
+    return { ok: true, ...opened };
   }
 
   async function openDashboard(sourceTab = null) {
@@ -779,9 +872,198 @@
   const arrangedWorkerWindowIds = new Set();
   api.windows?.onRemoved?.addListener((windowId) => arrangedWorkerWindowIds.delete(windowId));
 
+  let summaryTab;
+  const summaryUrl = api.runtime.getURL("enrichment-summary.html");
+
   async function summaryTabs() {
-    const url = api.runtime.getURL("enrichment-summary.html");
-    return (await api.tabs.query({})).filter((tab) => tab.url === url);
+    const windows = await api.windows.getAll({ populate: true });
+    return windows.flatMap((window) => window.tabs || []).filter((tab) =>
+      tab.id === summaryTab?.id || [tab.url, tab.pendingUrl].includes(summaryUrl));
+  }
+
+  async function openSummaryWindow(bounds) {
+    const [existing, ...duplicates] = await summaryTabs();
+    if (existing) {
+      await Promise.allSettled(duplicates.map(({ id }) => api.tabs.remove(id)));
+      await api.windows.update(existing.windowId, { state: "normal" });
+      await api.windows.update(existing.windowId, { ...bounds, focused: true });
+      summaryTab = existing;
+      return existing;
+    }
+    const options = { ...bounds, url: summaryUrl, focused: true };
+    const created = await api.windows.create({ ...options, type: "popup" })
+      .catch(() => api.windows.create({ ...options, type: "normal" }));
+    const [tab] = created.tabs?.length ? created.tabs : await api.tabs.query({ windowId: created.id });
+    if (!tab) throw new Error("Не удалось найти вкладку сводки.");
+    summaryTab = tab;
+    return tab;
+  }
+
+  let rotation;
+  const rotationDwellMs = 900;
+
+  async function closeRotationWindows(runId, mode = rotation) {
+    if (mode?.runId !== runId) return { closed: new Set(), pending: [] };
+    if (mode.cleanup) return mode.cleanup;
+    mode.closing = true;
+    mode.cleanup = cleanupRotationWindows(mode);
+    return mode.cleanup;
+  }
+
+  async function cleanupRotationWindows(mode) {
+    const closed = new Set();
+    const pending = [];
+    await Promise.all(mode.lanes.map(async (lane) => {
+      for (let attempt = 0; attempt < 8; attempt++) {
+        const window = await api.windows.get(lane.windowId, { populate: true }).catch(() => null);
+        if (!window) return;
+        const tabs = window.tabs || await api.tabs.query({ windowId: lane.windowId }).catch(() => null);
+        if (!tabs || tabs.some(({ id }) => !lane.ownedTabs.has(id))) {
+          if (tabs) await api.tabs.remove(lane.seedTabId).catch(() => {});
+          return;
+        }
+        try {
+          await api.windows.remove(lane.windowId);
+          for (const { id } of tabs) closed.add(id);
+        } catch {}
+        await sleep(250);
+      }
+      if (await api.windows.get(lane.windowId).catch(() => null)) pending.push(lane.windowId);
+    }));
+    if (!pending.length && rotation === mode) rotation = undefined;
+    if (pending.length) mode.cleanup = undefined;
+    return { closed, pending };
+  }
+
+  async function pauseWithoutSummary(mode) {
+    await serial(async () => {
+      if (rotation !== mode || mode.closing) return;
+      if (await api.tabs.get(mode.summaryTabId).catch(() => null)) return;
+      const job = await loadJob();
+      if (job.run_id !== mode.runId || job.status !== "running") return;
+      job.status = "paused";
+      job.pause_reason = "Сводка закрыта. Нажмите «Продолжить», чтобы открыть её снова.";
+      await saveJob(job);
+    });
+  }
+
+  async function rotateWorkerTabs(mode, lane) {
+    let previousWorkerId = "";
+    try {
+      while (rotation === mode && !mode.closing && !pendingStops) {
+        const job = await loadJob();
+        if (job.run_id !== mode.runId || !["running", "paused", "blocked"].includes(job.status)) break;
+        const summary = await api.tabs.get(mode.summaryTabId).catch(() => null);
+        if (!summary) {
+          if (job.status === "running") await pauseWithoutSummary(mode);
+          await sleep(500);
+          continue;
+        }
+        const focused = await api.windows.getLastFocused();
+        if (job.status !== "running" || !(focused.id === summary.windowId || (!mode.split && focused.id === lane.windowId))) {
+          await sleep(500);
+          continue;
+        }
+        const activeWorkers = job.workers.slice(lane.first, lane.last).filter((worker) =>
+          worker.current_object_key && Number.isInteger(worker.tab_id));
+        if (!activeWorkers.length) {
+          await sleep(300);
+          continue;
+        }
+        const index = activeWorkers.findIndex((worker) => worker.worker_id === previousWorkerId);
+        const worker = activeWorkers[(index + 1) % activeWorkers.length];
+        previousWorkerId = worker.worker_id;
+        try {
+          const tab = await api.tabs.get(worker.tab_id);
+          if (rotation !== mode || mode.closing || pendingStops) break;
+          const grouped = new Set((await api.tabs.query({ windowId: lane.windowId })).map(({ id }) => id));
+          if (rotation !== mode || mode.closing || pendingStops) break;
+          for (const { tab_id } of activeWorkers) {
+            if (!grouped.has(tab_id)) {
+              if (rotation !== mode || mode.closing || pendingStops) break;
+              lane.ownedTabs.add(tab_id);
+              await api.tabs.move(tab_id, { windowId: lane.windowId, index: -1 }).catch(() => {});
+            }
+          }
+          if (rotation !== mode || mode.closing || pendingStops) break;
+          await api.tabs.update(tab.id, { active: true });
+          if (!mode.split) await api.windows.update(lane.windowId, { focused: true });
+          const assignedAt = job.tasks[worker.current_object_key]?.assigned_at;
+          if (assignedAt && !firstActivationByWorker.has(worker.worker_id)) {
+            firstActivationByWorker.set(worker.worker_id, { runId: job.run_id, assignedAt, at: Date.now() });
+          }
+          await sleep(rotationDwellMs);
+          if (rotation !== mode || mode.closing || pendingStops) break;
+          if (!mode.split && (await api.windows.getLastFocused()).id === lane.windowId) {
+            await api.windows.update(summary.windowId, { focused: true });
+          }
+        } catch {
+          // A worker can disappear while its card is completing.
+        }
+        await sleep(150);
+      }
+    } finally {
+      if (!mode.closing) {
+        const job = await loadJob();
+        if (job.run_id !== mode.runId || !["completed", "stopped"].includes(job.status)) {
+          await api.tabs.remove(lane.seedTabId).catch(() => {});
+        }
+      }
+    }
+  }
+
+  async function startWorkerRotation(area, sender, split) {
+    if (sender.url?.split(/[?#]/)[0] !== api.runtime.getURL("enrichment.html")) {
+      throw new Error("Режим доступен из окна досбора.");
+    }
+    const job = await loadJob();
+    if (job.status !== "running" || pendingStops) throw new Error("Сначала запустите досбор.");
+    const desiredCount = split ? Math.ceil(job.workers.length / 4) : 1;
+    let bounds = workerWindowBounds(area, desiredCount + 1);
+    if (bounds.length < 2) {
+      const { left, top, width, height } = area || {};
+      if (![left, top, width, height].every(Number.isInteger) || width < 320 || height < 220) {
+        throw new Error("На экране недостаточно места для рабочих окон и сводки.");
+      }
+      const slot = { left, top, width: Math.min(width, 420), height: Math.min(height, 260) };
+      bounds = [slot, { ...slot }];
+    }
+    const siteCount = bounds.length - 1;
+    const parallel = split && siteCount === desiredCount && bounds[0] !== bounds.at(-1) &&
+      (bounds[0].left !== bounds.at(-1).left || bounds[0].top !== bounds.at(-1).top);
+    const current = rotation;
+    if (current?.runId === job.run_id && !current.closing) {
+      const summary = await openSummaryWindow(current.summaryBounds);
+      current.summaryTabId = summary.id;
+      return { ok: true, working_window_ids: current.lanes.map(({ windowId }) => windowId), summary_window_id: summary.windowId };
+    }
+    const groupSize = Math.ceil(job.workers.length / siteCount);
+    const lanes = [];
+    try {
+      for (let index = 0; index < siteCount; index++) {
+        const working = await api.windows.create({ ...bounds[index], type: "normal", url: "about:blank", focused: false });
+        const [seed] = working.tabs?.length ? working.tabs : await api.tabs.query({ windowId: working.id });
+        if (!seed) {
+          await api.windows.remove(working.id).catch(() => {});
+          throw new Error("Не удалось найти рабочее окно.");
+        }
+        lanes.push({ windowId: working.id, seedTabId: seed.id, ownedTabs: new Set([seed.id]), first: index * groupSize, last: (index + 1) * groupSize });
+      }
+      const summary = await openSummaryWindow(bounds.at(-1));
+      const mode = { runId: job.run_id, split: parallel, summaryTabId: summary.id, summaryBounds: bounds.at(-1), lanes };
+      rotation = mode;
+      Promise.allSettled(lanes.map((lane) => rotateWorkerTabs(mode, lane))).then(() => {
+        if (rotation === mode && !mode.closing) {
+          loadJob().then((current) => {
+            if (rotation === mode && !mode.closing && !["completed", "stopped"].includes(current.status)) rotation = undefined;
+          }).catch(() => {});
+        }
+      });
+      return { ok: true, working_window_ids: lanes.map(({ windowId }) => windowId), summary_window_id: summary.windowId };
+    } catch (error) {
+      await Promise.allSettled(lanes.map(({ windowId }) => api.windows.remove(windowId)));
+      throw error;
+    }
   }
 
   async function arrangeWorkerWindows(area, sender, withSummary) {
@@ -798,19 +1080,10 @@
     if (!bounds.length) throw new Error("На этом экране недостаточно места для рабочего окна.");
     let summaryOpened = false;
     let summaryError = "";
-    if (withSummary) {
+    if (withSummary && !pendingStops) {
       const slot = bounds.pop();
       try {
-        const [existing] = await summaryTabs();
-        if (existing) {
-          await api.windows.update(existing.windowId, { state: "normal" });
-          await api.windows.update(existing.windowId, { ...slot, focused: true });
-        } else {
-          const url = api.runtime.getURL("enrichment-summary.html");
-          const options = { ...slot, url, focused: true };
-          await api.windows.create({ ...options, type: "popup" })
-            .catch(() => api.windows.create({ ...options, type: "normal" }));
-        }
+        await openSummaryWindow(slot);
         summaryOpened = true;
       } catch (error) {
         bounds.push(slot);
@@ -821,7 +1094,7 @@
     let skipped = 0;
     let firstError = "";
     for (const tabId of tabs) {
-      if (arranged >= bounds.length) break;
+      if (pendingStops || arranged >= bounds.length) break;
       try {
         const current = await api.tabs.get(tabId);
         const window = await api.windows.get(current.windowId, { populate: true });
@@ -863,18 +1136,24 @@
 
   async function handleMessage(message, sender) {
     switch (message?.type) {
+      case "ENRICHMENT_GET_SUMMARY": {
+        if (sender.url === summaryUrl && sender.tab) summaryTab = sender.tab;
+        const { job, saved_counts } = await getState();
+        const { source, status, totals, started_at, completed_at, last_saved_at } = job;
+        return { ok: true, job: { source, status, totals, started_at, completed_at, last_saved_at }, saved_counts };
+      }
       case "ENRICHMENT_GET_STATE": return { ok: true, ...(await getState()) };
       case "ENRICHMENT_GET_RESULTS": {
         const results = await loadResults();
         return { ok: true, results: Object.fromEntries(Object.entries(results)
           .filter(([key]) => key.startsWith("xlsx:") === (message.imported === true))) };
       }
-      case "ENRICHMENT_START": return startJob(message.options || {});
+      case "ENRICHMENT_START": return startJob(message.options || {}, message.area, sender);
       case "ENRICHMENT_PAUSE": return pauseJob();
-      case "ENRICHMENT_RESUME": return resumeJob(message.source);
+      case "ENRICHMENT_RESUME": return resumeJob(message.source, message.area, sender);
       case "ENRICHMENT_STOP": return stopJob();
       case "ENRICHMENT_FORCE_RESET": return forceResetEnrichment(message.importOnly === true);
-      case "ENRICHMENT_RETRY_ERRORS": return retryErrors();
+      case "ENRICHMENT_RETRY_ERRORS": return retryErrors(message.area, sender);
       case "OPEN_ENRICHMENT": {
         let sourceTab = sender?.tab || null;
         if (!sourceTab?.id && Number.isInteger(message.source_tab_id)) {
@@ -882,7 +1161,11 @@
         }
         return openDashboard(sourceTab);
       }
-      case "ENRICHMENT_ARRANGE_WINDOWS": return serial(() => arrangeWorkerWindows(message.area, sender, message.with_summary === true));
+      case "ENRICHMENT_ROTATE_WINDOWS": return serial(() => startWorkerRotation(message.area, sender, message.split === true));
+      case "ENRICHMENT_ARRANGE_WINDOWS": return serial(async () => {
+        rotation = undefined;
+        return arrangeWorkerWindows(message.area, sender, message.with_summary === true);
+      });
       case "ENRICHMENT_OPEN_WORKER": return openWorker(message.worker_id, message.object_key);
       case "ENRICHMENT_WORKER_READY":
         if (sender?.tab?.id) await dispatchForTab(sender.tab.id, true);
@@ -904,6 +1187,7 @@
   });
 
   api.tabs.onRemoved.addListener((tabId) => {
+    if (summaryTab?.id === tabId) summaryTab = undefined;
     serial(async () => {
       const job = await loadJob();
       const worker = job.workers.find((item) => item.tab_id === tabId);

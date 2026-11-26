@@ -162,7 +162,6 @@
   }
 
   let checkingWorkerTabs = false;
-  let arrangingWorkerWindows = false;
   async function updateWorkerDiagnostics() {
     for (const element of $("workersList").querySelectorAll("[data-stage-started]")) {
       element.textContent = workerStageTime(Number(element.dataset.stageStarted));
@@ -187,7 +186,6 @@
 
   function renderWorkers(job) {
     const root = $("workersList");
-    $("btnArrangeWorkers").disabled = arrangingWorkerWindows || !job.workers?.some((worker) => Number.isInteger(worker.tab_id));
     if (!job.workers?.length) {
       root.className = "workers empty";
       root.textContent = "\u041d\u0435\u0442 \u0437\u0430\u043f\u0443\u0449\u0435\u043d\u043d\u044b\u0445 \u0432\u043a\u043b\u0430\u0434\u043e\u043a";
@@ -264,6 +262,7 @@
     const eta = speed ? (total - done) / speed : NaN;
 
     document.body.dataset.jobStatus = job.status || "idle";
+    if (job.status === "paused" && job.pause_reason) setStatus(job.pause_reason, true);
     $("statusBackdropText").textContent = STATUS_LABELS[job.status] || job.status || "ожидание";
     $("jobBadgeText").textContent = STATUS_LABELS[job.status] || job.status;
     $("jobBadge").className = `job-badge ${job.status}`;
@@ -282,7 +281,7 @@
     $("progressText").textContent = total ? `\u041e\u0431\u0440\u0430\u0431\u043e\u0442\u0430\u043d\u043e ${done} \u0438з ${total}` : "\u0413\u043e\u0442\u043e\u0432\u043e \u043a \u0437\u0430\u043f\u0443\u0441\u043a\u0443";
     $("baseCount").textContent = fromFile ? `${sourceBaseCount} строк со ссылками · ${state.saved_counts?.xlsx || 0} результатов` : `${sourceBaseCount} объектов ${source === "2gis" ? "2ГИС" : "Яндекса"} в базовом сборе · ${state.result_count || 0} результатов всего`;
     $("sourceModeHint").textContent = fromFile ? "Поддерживаются ссылки на карточки Яндекса и 2ГИС." : source === "2gis"
-      ? "Отдельная очередь откроет /tab/info в 1–16 неактивных вкладках и прочитает структурированный объект карточки."
+      ? "Отдельная очередь откроет /tab/info в 1–12 рабочих вкладках и прочитает структурированный объект карточки."
       : "Карточки Яндекса откроются в фоновых вкладках: обзор и вкладка «Особенности».";
     if (sourceBaseCount && $("statusText").textContent.startsWith("\u0421\u043d\u0430\u0447\u0430\u043b\u0430")) {
       setStatus("\u0411\u0430\u0437\u043e\u0432\u044b\u0435 URL \u0433\u043e\u0442\u043e\u0432\u044b. \u0412\u044b\u0431\u0435\u0440\u0438\u0442\u0435 \u043f\u0430\u0440\u0430\u043c\u0435\u0442\u0440\u044b \u0438 \u0437\u0430\u043f\u0443\u0441\u0442\u0438\u0442\u0435 \u0434\u043e\u0441\u0431\u043e\u0440.");
@@ -329,10 +328,24 @@
     }
   }
 
+  function workArea() {
+    return {
+      left: Math.round(screen.availLeft ?? 0),
+      top: Math.round(screen.availTop ?? 0),
+      width: Math.round(screen.availWidth),
+      height: Math.round(screen.availHeight)
+    };
+  }
+
   async function runAction(type, extra, successText) {
     try {
       setStatus("\u0412\u044bпол\u043dяю\u2026");
-      await send(type, extra);
+      const result = await send(type, extra);
+      if (result.layout_error) {
+        setStatus(`Досбор запущен в фоновых вкладках. Рабочие окна: ${result.layout_error}`, true);
+        await refresh();
+        return;
+      }
       setStatus(successText || "\u0413\u043e\u0442\u043eво");
       await refresh();
     } catch (error) {
@@ -645,38 +658,12 @@
   }
 
   document.addEventListener("DOMContentLoaded", () => {
-    setInterval(updateWorkerDiagnostics, 1000);
+    setInterval(() => { if (!document.hidden) updateWorkerDiagnostics(); }, 1000);
     const workersModal = $("workersModal");
     $("btnWorkersModal").addEventListener("click", () => {
       $("workersModalStatus").hidden = true;
       $("workersModalBody").append($("workersList"));
       workersModal.showModal();
-    });
-    $("btnArrangeWorkers").addEventListener("click", async () => {
-      arrangingWorkerWindows = true;
-      $("btnArrangeWorkers").disabled = true;
-      const message = $("workersModalStatus");
-      message.hidden = false;
-      message.textContent = "Раскладываю рабочие окна…";
-      try {
-        const area = {
-          left: Math.round(screen.availLeft ?? 0),
-          top: Math.round(screen.availTop ?? 0),
-          width: Math.round(screen.availWidth),
-          height: Math.round(screen.availHeight)
-        };
-        const result = await send("ENRICHMENT_ARRANGE_WINDOWS", { area, with_summary: true });
-        message.textContent = `Разложено: ${result.arranged} · в фоне: ${result.background}` +
-          (result.skipped ? ` · не удалось переместить: ${result.skipped}` : "") +
-          (result.summary_opened ? " · сводка открыта" : "") +
-          (result.summary_error ? ` · сводка: ${result.summary_error}` : "") +
-          (result.first_error ? ` · ${result.first_error}` : "");
-      } catch (error) {
-        message.textContent = String(error?.message || error);
-      } finally {
-        arrangingWorkerWindows = false;
-        await refresh();
-      }
     });
     workersModal.addEventListener("close", () => {
       $("workersInline").append($("workersList"));
@@ -728,6 +715,7 @@
         }
       }
       runAction("ENRICHMENT_START", {
+        area: workArea(),
         options: {
           source,
           ...fileOptions,
@@ -740,8 +728,8 @@
       }, "\u0414осбор \u0437а\u043fущен");
     });
     $("btnPause").addEventListener("click", () => runAction("ENRICHMENT_PAUSE", {}, "\u041eче\u0440е\u0434\u044c \u043d\u0430 \u043f\u0430\u0443\u0437е"));
-    $("btnResume").addEventListener("click", () => runAction("ENRICHMENT_RESUME", { source: selectedSource() }, "\u041e\u0447\u0435\u0440е\u0434\u044c \u043f\u0440од\u043e\u043b\u0436\u0435на"));
-    $("btnRetry").addEventListener("click", () => runAction("ENRICHMENT_RETRY_ERRORS", {}, "\u041e\u0448\u0438\u0431\u043a\u0438 \u0432е\u0440\u043dу\u0442ы \u0432 \u043e\u0447\u0435р\u0435\u0434ь"));
+    $("btnResume").addEventListener("click", () => runAction("ENRICHMENT_RESUME", { source: selectedSource(), area: workArea() }, "\u041e\u0447\u0435\u0440е\u0434\u044c \u043f\u0440од\u043e\u043b\u0436\u0435на"));
+    $("btnRetry").addEventListener("click", () => runAction("ENRICHMENT_RETRY_ERRORS", { area: workArea() }, "\u041e\u0448\u0438\u0431\u043a\u0438 \u0432е\u0440\u043dу\u0442ы \u0432 \u043e\u0447\u0435р\u0435\u0434ь"));
     $("btnStop").addEventListener("click", () => {
       if (confirm("\u041e\u0441\u0442\u0430\u043d\u043e\u0432ить досбор и закрыть рабочие вкладки?")) runAction("ENRICHMENT_STOP", {}, "\u0414\u043e\u0441б\u043e\u0440 \u043eстановлен");
     });
@@ -760,12 +748,13 @@
     $("btnExport").addEventListener("click", exportWorkbook);
     api.storage.onChanged.addListener((changes, area) => {
       if (area === "local" && changes[THEME_KEY]?.newValue) applyTheme(changes[THEME_KEY].newValue);
-      if (area === "local" && (changes[JOB_KEY] || changes[RESULTS_KEY] || changes[SESSION_KEY])) {
+      if (!document.hidden && area === "local" && (changes[JOB_KEY] || changes[RESULTS_KEY] || changes[SESSION_KEY])) {
         clearTimeout(refreshTimer);
         refreshTimer = setTimeout(refresh, 100);
       }
     });
     refresh();
-    setInterval(refresh, 3000);
+    document.addEventListener("visibilitychange", () => { if (!document.hidden) refresh(); });
+    setInterval(() => { if (!document.hidden) refresh(); }, 3000);
   });
 })();

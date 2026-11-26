@@ -10,14 +10,14 @@
     return new Promise((resolve) => setTimeout(resolve, ms));
   }
 
-  function pageLooksLikeCaptcha() {
+  function pageLooksLikeCaptcha(text) {
     const url = String(location.href || "");
-    const text = String(document.body?.innerText || document.title || "").slice(0, 5000);
+    text = text.slice(0, 5000);
     return /showcaptcha|captcha/i.test(url) || /\u044f\s+\u043d\u0435\s+\u0440\u043e\u0431\u043e\u0442|\u0432\u0432\u0435\u0434\u0438\u0442\u0435\s+\u0441\u0438\u043c\u0432\u043e\u043b\u044b|\u043f\u043e\u0434\u0442\u0432\u0435\u0440\u0434\u0438\u0442\u0435,?\s+\u0447\u0442\u043e\s+\u0432\u044b\s+\u043d\u0435\s+\u0440\u043e\u0431\u043e\u0442/i.test(text);
   }
 
-  function pageIsRateLimited() {
-    const text = String(document.body?.innerText || "").replace(/\s+/g, " ").trim().toLowerCase();
+  function pageIsRateLimited(pageText) {
+    const text = pageText.replace(/\s+/g, " ").trim().toLowerCase();
     return text === "limited" || text === "too many requests" || /temporarily limited/i.test(text);
   }
 
@@ -43,6 +43,36 @@
     } catch {}
   }
 
+  const featuresSelector = ".business-features-view._view_tab, .tabs-select-view__title._name_features";
+
+  function waitForFeatureChange(timeout) {
+    return new Promise((resolve) => {
+      let debounce;
+      const finish = () => {
+        observer.disconnect();
+        clearTimeout(fallback);
+        clearTimeout(debounce);
+        resolve();
+      };
+      const observer = new MutationObserver((mutations) => {
+        if (debounce) return;
+        const relevant = mutations.some(({ target, addedNodes, removedNodes }) => {
+          const element = target.nodeType === Node.ELEMENT_NODE ? target : target.parentElement;
+          return element?.closest(featuresSelector) ||
+            [...addedNodes, ...removedNodes].some((node) =>
+              node.nodeType === Node.ELEMENT_NODE &&
+              (node.matches(featuresSelector) || node.querySelector(featuresSelector)));
+        });
+        if (relevant) debounce = setTimeout(finish, 100);
+      });
+      const fallback = setTimeout(finish, timeout);
+      observer.observe(document.body || document.documentElement, {
+        childList: true, subtree: true, characterData: true,
+        attributes: true, attributeFilter: ["aria-busy", "aria-selected", "class", "hidden", "style"]
+      });
+    });
+  }
+
   async function waitForFeatures(deadline) {
     let clickedAt = -Infinity;
     let previousState = "";
@@ -50,8 +80,9 @@
     let recognizablePanel = false;
 
     while (Date.now() < deadline) {
-      if (pageLooksLikeCaptcha()) return { state: "captcha" };
-      if (pageIsRateLimited()) return { state: "rate_limited" };
+      const pageText = document.body?.innerText || document.title || "";
+      if (pageLooksLikeCaptcha(pageText)) return { state: "captcha" };
+      if (pageIsRateLimited(pageText)) return { state: "rate_limited" };
       const panel = document.querySelector(".business-features-view._view_tab");
       const activePanel = panel?.getClientRects().length ? panel : null;
       const control = document.querySelector(".tabs-select-view__title._name_features");
@@ -76,10 +107,16 @@
         return { state: state === "empty" ? "empty" : "collected", attributes };
       }
       if (!control && !activePanel && !selected && document.readyState === "complete" &&
-          document.querySelector(".tabs-select-view__title._name_overview") && now >= deadline - 250) {
+          document.querySelector(".tabs-select-view__title._name_overview") && now >= deadline - 100) {
         return { state: "unavailable" };
       }
-      await sleep(Math.min(250, Math.max(0, deadline - Date.now())));
+      const nextCheck = state ? Math.max(100, stableSince + 500 - Date.now()) : 1000;
+      await waitForFeatureChange(Math.max(0, Math.min(nextCheck, deadline - Date.now())));
+    }
+    if (!document.querySelector(featuresSelector) &&
+        new URL(location.href).searchParams.get("tab") !== "features" &&
+        document.readyState === "complete" && document.querySelector(".tabs-select-view__title._name_overview")) {
+      return { state: "unavailable" };
     }
     return { state: recognizablePanel ? "unrecognized" : "timeout" };
   }
@@ -110,8 +147,9 @@
   async function waitForCard(deadline) {
     let stableChecks = 0;
     while (Date.now() < deadline) {
-      if (pageLooksLikeCaptcha()) return { captcha: true };
-      if (pageIsRateLimited()) return { rate_limited: true };
+      const pageText = document.body?.innerText || document.title || "";
+      if (pageLooksLikeCaptcha(pageText)) return { captcha: true };
+      if (pageIsRateLimited(pageText)) return { rate_limited: true };
       if (hasUsefulCard()) {
         stableChecks += 1;
         if (stableChecks >= 2) return { ready: true };
@@ -145,10 +183,13 @@
     }
     if (readiness.timeout) throw new Error("\u041a\u0430\u0440\u0442\u043e\u0447\u043a\u0430 \u043e\u0440\u0433\u0430\u043d\u0438\u0437\u0430\u0446\u0438\u0438 \u043d\u0435 \u0437\u0430\u0433\u0440\u0443\u0437\u0438\u043b\u0430\u0441\u044c \u0437\u0430 \u043e\u0442\u0432\u0435\u0434\u0451\u043d\u043d\u043e\u0435 \u0432\u0440\u0435\u043c\u044f");
 
+    const pageLoadMs = Math.max(0, Math.round(Date.now() - performance.timeOrigin));
     await expandCardSections(deadline);
     const overviewResult = parser.parseDocument(document, location.href);
     const coordinates = globalThis.MapsYandexCoordinates?.read(document).get(expectedOrgId || actualOrgId);
+    const featuresStartedAt = performance.now();
     const features = await waitForFeatures(deadline);
+    const featureReadMs = Math.round(performance.now() - featuresStartedAt);
     if (features.state === "captcha" || features.state === "rate_limited") {
       return { ok: false, status: features.state, url: location.href };
     }
@@ -160,12 +201,13 @@
       ? parser.parseDocument(document, location.href, features.attributes) : overviewResult;
     const result = { ...mergeParseResults(overviewResult, featureResult), ...coordinates, feature_state: features.state };
     if (!result.title && !result.address) throw new Error("\u0412 \u043a\u0430\u0440\u0442\u043e\u0447\u043a\u0435 \u043d\u0435 \u043d\u0430\u0439\u0434\u0435\u043d\u044b \u043e\u0441\u043d\u043e\u0432\u043d\u044b\u0435 \u043f\u043e\u043b\u044f");
+    const timings = { page_load_ms: pageLoadMs, features_ms: featureReadMs };
     result.duration_ms = Date.now() - startedAt;
     if (features.state === "timeout" || features.state === "unrecognized") {
       const error = features.state === "timeout" ? "Раздел «Особенности» не загрузился за отведённое время" : "Разметка «Особенностей» не распознана";
-      return { ok: false, status: "partial", result, error, url: location.href };
+      return { ok: false, status: "partial", result, timings, error, url: location.href };
     }
-    return { ok: true, status: "success", result };
+    return { ok: true, status: "success", result, timings };
   }
 
   api.runtime.onMessage.addListener((message, _sender, sendResponse) => {

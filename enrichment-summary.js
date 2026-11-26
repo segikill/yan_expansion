@@ -13,7 +13,7 @@
   };
   async function refresh() {
     try {
-      const state = await api.runtime.sendMessage({ type: "ENRICHMENT_GET_STATE" });
+      const state = await api.runtime.sendMessage({ type: "ENRICHMENT_GET_SUMMARY" });
       if (!state?.ok) throw new Error("Unavailable");
       const { job } = state;
       const totals = job.totals || {};
@@ -32,6 +32,9 @@
       $("errors").textContent = errors;
       $("saved").textContent = state.saved_counts?.[job.source] || 0;
       $("elapsed").textContent = duration(elapsed);
+      const lastSaved = Date.parse(job.last_saved_at);
+      $("lastSaved").textContent = Number.isFinite(lastSaved)
+        ? new Date(lastSaved).toLocaleString("ru-RU") : "—";
       $("eta").textContent = duration(job.status === "running" && done ? elapsed * remaining / done : NaN);
     } catch {
       $("status").textContent = "Не удалось прочитать состояние досбора";

@@ -27,7 +27,10 @@ const storage = {
 let runtimeMessageHandler;
 let tabsUpdatedHandler;
 let nextTabId = 10;
+let nextWindowId = 10;
 const tabs = new Map();
+let parseCalls = 0;
+let parseGate;
 let workerResponse = {
   ok: true,
   status: "success",
@@ -64,16 +67,20 @@ const browser = {
   },
   windows: {
     onRemoved: event(),
+    async getAll() { return Promise.all([...new Set([...tabs.values()].map((tab) => tab.windowId))].map((id) => this.get(id))); },
     async get(id) {
+      if (removedWindows.includes(id) && ![...tabs.values()].some((tab) => tab.windowId === id)) throw new Error('No window');
       return { id, type: "normal", tabs: [...tabs.values()].filter((tab) => tab.windowId === id) };
     },
+    async getLastFocused() { return { id: -1 }; },
     async create(properties) {
       windowCreates.push(properties);
       if (properties.type === "popup") throw new Error("Popup unsupported");
       if (properties.url) {
-        const tab = { id: nextTabId++, windowId: 3, url: properties.url };
+        const windowId = properties.url === "about:blank" ? nextWindowId++ : 3;
+        const tab = { id: nextTabId++, windowId, url: properties.url };
         tabs.set(tab.id, tab);
-        return { id: 3 };
+        return { id: windowId, tabs: [tab] };
       }
       tabs.get(properties.tabId).windowId = 2;
       return { id: 2 };
@@ -102,12 +109,14 @@ const browser = {
       return tab;
     },
     async sendMessage() {
+      parseCalls++;
+      await parseGate;
       return structuredClone(workerResponse);
     },
     async remove(tabIds) {
       for (const tabId of Array.isArray(tabIds) ? tabIds : [tabIds]) tabs.delete(tabId);
     },
-    async query() { return [...tabs.values()]; }
+    async query({ windowId } = {}) { return [...tabs.values()].filter((tab) => windowId == null || tab.windowId === windowId); }
   }
 };
 
@@ -176,8 +185,22 @@ async function waitForJob(status) {
   assert.equal(withSummary.arranged, 1);
   assert.equal(windowCreates.at(-1).url, browser.runtime.getURL("enrichment-summary.html"));
   assert.equal(windowCreates.at(-1).tabId, undefined);
+  const summaryFixture = [...tabs.values()].find((tab) => tab.windowId === 3);
+  delete summaryFixture.url;
+  const createsBeforeReuse = windowCreates.length;
+  assert.equal((await message({ ...arrange, with_summary: true }, dashboard)).summary_opened, true);
+  assert.equal(windowCreates.length, createsBeforeReuse);
 
-  tabsUpdatedHandler(workerTabId, { status: "complete" });
+  let releaseParse;
+  parseGate = new Promise((resolve) => { releaseParse = resolve; });
+  const ready = { type: "ENRICHMENT_WORKER_READY" };
+  const sender = { tab: { id: workerTabId } };
+  const firstParse = message(ready, sender);
+  await message(ready, sender);
+  assert.equal(parseCalls, 1);
+  releaseParse();
+  await firstParse;
+  parseGate = undefined;
 
   const deadline = Date.now() + 2000;
   while (storage[JOB_KEY].status !== "completed" && Date.now() < deadline) {
@@ -364,6 +387,66 @@ async function waitForJob(status) {
   assert.equal(dashboardTab.active, true);
   assert.equal(dashboardTab.windowId, 9);
   assert.equal(dashboardTab.index, 4);
+  const links = Array.from({ length: 9 }, (_, row) => ({
+    row, url: `https://yandex.ru/maps/org/test/${1234567890 + row}/`
+  }));
+  const batched = await message({
+    type: "ENRICHMENT_START",
+    area: { left: 0, top: 0, width: 1920, height: 1080 },
+    options: {
+      ...fileOptions, workers: 16, restartWorkbook: true,
+      links: [...links, { ...links[0], row: 9 }]
+    }
+  }, dashboard);
+  assert.equal(batched.ok, true);
+  assert.equal(batched.layout_error, "");
+  assert.equal(storage[JOB_KEY].workers.length, 12);
+  assert.equal(batched.layout.working_window_ids.length, 3);
+  assert.equal(storage[JOB_KEY].totals.total, 9);
+  assert.equal(storage[JOB_KEY].totals.active, 4);
+  const batchDeadline = Date.now() + 2200;
+  while (storage[JOB_KEY].totals.active < 9 && Date.now() < batchDeadline) {
+    await new Promise((resolve) => setTimeout(resolve, 20));
+  }
+  const assignments = storage[JOB_KEY].journal.filter(({ type }) => type === "assigned");
+  assert.equal(assignments.length, 9);
+  const groupedCounts = batched.layout.working_window_ids.map((windowId) =>
+    storage[JOB_KEY].workers.filter(({ tab_id }) => tabs.get(tab_id)?.windowId === windowId).length
+  );
+  assert.deepEqual(Array.from(groupedCounts), [4, 4, 1]);
+  assert.equal(new Set(assignments.map(({ object_key }) => object_key)).size, 9);
+  assert.equal(new Set(assignments.map(({ worker_id }) => worker_id)).size, 9);
+  assert.ok(Date.parse(assignments[4].at) - Date.parse(assignments[0].at) >= 400);
+  assert.ok(Date.parse(assignments[8].at) - Date.parse(assignments[4].at) >= 400);
+  workerResponse.timings = { page_load_ms: 100, features_ms: 20 };
+  const firstWorker = storage[JOB_KEY].workers.find(({ current_object_key }) => current_object_key);
+  await message({ type: "ENRICHMENT_WORKER_READY" }, { tab: { id: firstWorker.tab_id } });
+  const summary = await message({ type: "ENRICHMENT_GET_SUMMARY" });
+  const saved = storage[JOB_KEY].journal.find(({ type }) => type === "saved");
+  assert.equal(summary.job.last_saved_at, saved.at);
+  assert.deepEqual(saved.timings, { page_load_ms: 100, features_ms: 20, activation_wait_ms: null });
+  assert.equal(summary.job.totals.success, 1);
+  const summaryTab = [...tabs.values()].find(({ windowId }) => windowId === batched.layout.summary_window_id);
+  tabs.delete(summaryTab.id);
+  await waitForJob("paused");
+  assert.match(storage[JOB_KEY].pause_reason, /Сводка закрыта/);
+  const benchArea = { left: 0, top: 0, width: 1920, height: 1080 };
+  const reopened = await message({ type: "ENRICHMENT_RESUME", source: "xlsx", area: benchArea }, dashboard);
+  assert.equal(reopened.ok, true);
+  assert.equal(reopened.layout_error, "");
+  assert.deepEqual(reopened.layout.working_window_ids, batched.layout.working_window_ids);
+  assert.equal((await message({ type: "ENRICHMENT_STOP" })).ok, true);
+  assert.equal(batched.layout.working_window_ids.every((id) => removedWindows.includes(id)), true);
+  const compact = await message({
+    type: "ENRICHMENT_RESUME", source: "xlsx",
+    area: { left: 0, top: 0, width: 400, height: 250 }
+  }, dashboard);
+  assert.equal(compact.ok, true);
+  assert.equal(compact.layout_error, "");
+  assert.equal(compact.layout.working_window_ids.length, 1);
+  const activeTab = tabs.get(storage[JOB_KEY].workers.find(({ tab_id }) => Number.isInteger(tab_id)).tab_id);
+  assert.equal(activeTab.windowId, compact.layout.working_window_ids[0]);
+  assert.equal((await message({ type: "ENRICHMENT_STOP" })).ok, true);
   console.log("PASS background controller: Yandex, 2GIS, force-reset and adjacent dashboard paths");
 })().catch((error) => {
   console.error(error);
