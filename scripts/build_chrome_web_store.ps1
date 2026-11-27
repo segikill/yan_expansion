@@ -1,5 +1,5 @@
 param(
-  [string]$Version = "1.13.1"
+  [string]$Version = "1.13.2"
 )
 
 $ErrorActionPreference = "Stop"
@@ -44,6 +44,8 @@ $files = @(
   "content.js",
   "overlay.js",
   "google_content.js",
+  "travel_parser.js",
+  "travel_content.js",
   "yandex_coordinates.js",
   "detail_parser.js",
   "detail_content.js",

@@ -20,6 +20,16 @@
     "lat", "lon", "url"
   ];
 
+  const TRAVEL_COLS = {
+    "Цена за ночь, ₽": "nightly_price",
+    "Номер в предложении": "room",
+    "Заезд для цены": "checkin",
+    "Выезд для цены": "checkout",
+    "Взрослых для цены": "adults",
+    "Возраст детей для цены": "children_ages",
+    "Номеров в поиске": "rooms"
+  };
+
   let session = emptySession();
   let lastRows = [];
   let lastSnapshot = null;
@@ -59,6 +69,7 @@
   }
 
   function sourceLabel(source) {
+    if (source === "travel") return "Яндекс Путешествия";
     return source === "yandex" ? "Yandex" :
       source === "google" ? "Google" :
       source === "2gis" ? "2GIS" : "Maps";
@@ -73,9 +84,19 @@
   }
 
   function normalizeCoord(v) {
-    if (v === "" || v == null) return "";
-    const n = Number(String(v).replace(",", "."));
+    const value = String(v ?? "").trim();
+    if (!value) return "";
+    const n = Number(value.replace(",", "."));
     return Number.isFinite(n) ? n : "";
+  }
+
+  function normalizeCoordinatePair(row) {
+    const lat = normalizeCoord(row?.lat);
+    const lon = normalizeCoord(row?.lon);
+    if (lat === "" || lon === "" || Math.abs(lat) > 90 || Math.abs(lon) > 180 || (!lat && !lon)) {
+      return { lat: "", lon: "" };
+    }
+    return { lat, lon };
   }
 
   function normalizeRating(v) {
@@ -95,8 +116,7 @@
     row.categories_all = String(row.categories_all ?? "").replace(/\s+/g, " ").trim();
     row.address = String(row.address ?? "").replace(/\s+/g, " ").trim();
     row.photos_count = sanitizeCount(row.photos_count);
-    row.lat = normalizeCoord(row.lat);
-    row.lon = normalizeCoord(row.lon);
+    Object.assign(row, normalizeCoordinatePair(row));
     row.url = String(row.url ?? "").trim();
     row.scraped_at = row.scraped_at || nowIso();
     row.source = source || "unknown";
@@ -132,10 +152,15 @@
     const merged = { ...oldObj };
 
     for (const key of BASE_COLS) {
+      if (key === "lat" || key === "lon") continue;
       const v = newObj[key];
       if (v !== "" && v != null) merged[key] = v;
     }
 
+    const point = normalizeCoordinatePair(newObj);
+    Object.assign(merged, point.lat === "" ? normalizeCoordinatePair(oldObj) : point);
+    if (newObj.travel_offer) merged.travel_offer = newObj.travel_offer;
+    if (newObj.room_count) merged.room_count = newObj.room_count;
     merged.source = oldObj.source || newObj.source;
     merged.last_snapshot_id = snapshot.snapshot_id;
     merged.last_seen_at = snapshot.created_at;
@@ -327,6 +352,7 @@
         center_lat: context?.map_state?.center_lat ?? "",
         center_lon: context?.map_state?.center_lon ?? "",
         zoom: context?.map_state?.zoom ?? "",
+        ...(source === "travel" ? { navigation_token: context?.map_state?.navigationToken || "0" } : {}),
         collected_count: rows.length,
         added_count: 0,
         duplicate_count: 0,
@@ -373,7 +399,8 @@
       lastSnapshot = snapshot;
       await saveSession();
       updateStats();
-      setStatus(`Добавлено ${snapshot.added_count} · дублей ${snapshot.duplicate_count}`);
+      const page = source === "travel" ? Number(snapshot.navigation_token) / 50 + 1 : 0;
+      setStatus(`Добавлено ${snapshot.added_count} · дублей ${snapshot.duplicate_count}${Number.isInteger(page) && page > 0 ? ` · стр. ${page}` : ""}`);
     } catch (e) {
       console.error("Maps Export fix error:", e);
       setStatus("Не удалось зафиксировать");
@@ -423,7 +450,15 @@
     }
 
     const wb = XLSX.utils.book_new();
-    XLSX.utils.book_append_sheet(wb, sheetFromRows(OBJECT_COLS, objects.map(r => normalizeForSheet(r, OBJECT_COLS))), "objects");
+    const columns = [...OBJECT_COLS];
+    if (objects.some((row) => row.source === "travel")) columns.push(...Object.keys(TRAVEL_COLS), "Количество номеров");
+    const rows = objects.map((object) => {
+      const row = { ...object, ...normalizeCoordinatePair(object) };
+      if (row.source !== "travel") return normalizeForSheet(row, columns);
+      const offer = Object.fromEntries(Object.entries(TRAVEL_COLS).map(([label, key]) => [label, row.travel_offer?.[key]]));
+      return normalizeForSheet({ ...row, ...offer, "Количество номеров": row.room_count }, columns);
+    });
+    XLSX.utils.book_append_sheet(wb, sheetFromRows(columns, rows), "objects");
 
     const ts = new Date();
     const pad = (n) => String(n).padStart(2, "0");

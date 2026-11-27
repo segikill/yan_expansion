@@ -113,10 +113,30 @@
     }
   }
 
+  function travelHotelId(url) {
+    if (url.protocol !== "https:" || url.hostname !== "travel.yandex.ru" || url.username || url.password || url.port) return "";
+    const match = url.pathname.match(/^\/hotels\/([a-z0-9-]+)\/([a-z0-9-]+)\/?$/i);
+    if (!match || /^filter(?:-|$)|^(?:map|search|reviews)$/i.test(match[2])) return "";
+    return `${match[1]}/${match[2]}`;
+  }
+
   function detailUrlForObject(object) {
     if (!object || !object.url) return "";
     try {
       const sourceUrl = new URL(object.url);
+      if (object.source === "travel") {
+        const hotelId = travelHotelId(sourceUrl);
+        if (!hotelId) return "";
+        const detailUrl = new URL(`/hotels/${hotelId}/`, sourceUrl.origin);
+        const offer = object.travel_offer;
+        if (!offer || !/^\d{4}-\d{2}-\d{2}$/.test(offer.checkin) || !/^\d{4}-\d{2}-\d{2}$/.test(offer.checkout)) return detailUrl.href;
+        detailUrl.searchParams.set("checkinDate", offer.checkin);
+        detailUrl.searchParams.set("checkoutDate", offer.checkout);
+        if (/^\d{1,2}$/.test(offer.adults)) detailUrl.searchParams.set("adults", offer.adults);
+        if (/^\d{1,2}$/.test(offer.rooms)) detailUrl.searchParams.set("roomCount", offer.rooms);
+        if (/^\d{1,2}(?:,\d{1,2})*$/.test(offer.children_ages)) detailUrl.searchParams.set("childrenAges", offer.children_ages);
+        return detailUrl.href;
+      }
       if (object.source === "yandex") {
         if (!/(^|\.)(yandex\.|ya\.ru$)/i.test(sourceUrl.hostname)) return "";
         const orgId = String(object.org_id || orgIdFromYandexUrl(sourceUrl.toString()) || "");
@@ -143,7 +163,7 @@
   }
 
   function publicState(job, resultCount, baseCount, savedCounts) {
-    return { job, result_count: resultCount, base_count: baseCount.total, base_counts: baseCount, saved_counts: savedCounts, controller_version: "1.13.1" };
+    return { job, result_count: resultCount, base_count: baseCount.total, base_counts: baseCount, saved_counts: savedCounts, controller_version: api.runtime.getManifest?.().version || "1.13.2" };
   }
 
   async function getState() {
@@ -152,9 +172,10 @@
     const baseCount = {
       total: objects.length,
       yandex: objects.filter((object) => object?.source === "yandex" && detailUrlForObject(object)).length,
-      "2gis": objects.filter((object) => object?.source === "2gis" && detailUrlForObject(object)).length
+      "2gis": objects.filter((object) => object?.source === "2gis" && detailUrlForObject(object)).length,
+      travel: objects.filter((object) => object?.source === "travel" && detailUrlForObject(object)).length
     };
-    const saved = { yandex: 0, "2gis": 0, xlsx: 0 };
+    const saved = { yandex: 0, "2gis": 0, travel: 0, xlsx: 0 };
     for (const [key, object] of Object.entries(session?.objects || {})) {
       if (Object.hasOwn(saved, object?.source) && object.source !== "xlsx" && detailUrlForObject(object) && results[key]?.status === "success") saved[object.source]++;
     }
@@ -182,8 +203,10 @@
       parsed.protocol = "https:";
       const yandex = /(^|\.)(yandex\.(ru|com)|ya\.ru)$/i.test(parsed.hostname);
       const gis = /(^|\.)2gis\.(ru|com)$/i.test(parsed.hostname);
-      const source = yandex ? "yandex" : gis ? "2gis" : "";
-      const orgId = yandex && parsed.pathname.startsWith("/maps/") ? orgIdFromYandexUrl(parsed.href)
+      const travel = parsed.hostname === "travel.yandex.ru";
+      const source = travel ? "travel" : yandex ? "yandex" : gis ? "2gis" : "";
+      const orgId = travel ? travelHotelId(parsed)
+        : yandex && parsed.pathname.startsWith("/maps/") ? orgIdFromYandexUrl(parsed.href)
         : gis ? parsed.pathname.match(/\/(?:firm|geo)\/(\d{10,})(?:\/|$)/i)?.[1] : "";
       if (!source || !orgId) continue;
       const key = `xlsx:${runId}:${source}:${orgId}`;
@@ -195,7 +218,7 @@
 
   async function startJob(options, area, sender) {
     const workbook = options?.workbook;
-    const source = workbook ? "xlsx" : options?.source === "2gis" ? "2gis" : "yandex";
+    const source = workbook ? "xlsx" : ["2gis", "travel"].includes(options?.source) ? options.source : "yandex";
     const scope = ["unprocessed", "all", "errors"].includes(options?.scope) ? options.scope : "unprocessed";
     const requestedWorkers = Number(options?.workers ?? 2);
     const workersCount = Math.min(12, Math.max(1, Number.isFinite(requestedWorkers) ? Math.trunc(requestedWorkers) : 2));
@@ -230,7 +253,8 @@
           object_key: objectKey,
           source: object.source,
           ...(workbook ? { rows: object.rows } : {}),
-          org_id: String(object.org_id || orgIdFromYandexUrl(object.url) || ""),
+          org_id: object.source === "travel" ? travelHotelId(new URL(detailUrl))
+            : String(object.org_id || orgIdFromYandexUrl(object.url) || ""),
           title: String(object.title || ""),
           url: detailUrl,
           original_url: String(object.url || ""),
@@ -1235,9 +1259,30 @@
     return true;
   });
 
-  api.tabs.onUpdated.addListener((tabId, changeInfo) => {
-    if (changeInfo.status !== "complete") return;
-    markWaiting(tabId).then(() => dispatchForTab(tabId)).catch(() => {});
+  async function pauseAtTravelChallenge(tabId, value) {
+    let url;
+    try { url = new URL(value); } catch { return false; }
+    if (url.origin !== "https://travel.yandex.ru" || !/^\/showcaptcha(?:\/|$)/i.test(url.pathname)) return false;
+    const job = await loadJob();
+    const worker = job.workers.find((item) => item.tab_id === tabId);
+    const task = job.tasks[worker?.current_object_key];
+    if (!task || task.source !== "travel") return false;
+    await finishCaptcha({
+      run_id: job.run_id, object_key: task.object_key, worker_id: worker.worker_id,
+      assigned_at: task.assigned_at, attempt: task.attempts
+    }, task.url);
+    return true;
+  }
+
+  api.tabs.onUpdated.addListener((tabId, changeInfo, tab) => {
+    if (!changeInfo.url && changeInfo.status !== "complete") return;
+    (async () => {
+      if (await pauseAtTravelChallenge(tabId, changeInfo.url || tab?.url)) return;
+      if (changeInfo.status === "complete") {
+        await markWaiting(tabId);
+        await dispatchForTab(tabId);
+      }
+    })().catch(() => {});
   });
 
   api.tabs.onRemoved.addListener((tabId) => {

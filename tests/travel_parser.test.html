@@ -1,0 +1,72 @@
+<!doctype html>
+<html lang="ru">
+<meta charset="utf-8">
+<title>Тест Яндекс Путешествий</title>
+<pre id="test-output"></pre>
+<script src="../travel_parser.js"></script>
+<script>
+(() => {
+  const output = document.getElementById("test-output");
+  try {
+    const parser = globalThis.MapsTravelParser;
+    const base = "https://travel.yandex.ru/hotels/himki/?bbox=39,43~40,44&checkinDate=2026-11-27&checkoutDate=2026-12-11&adults=2&roomCount=1&navigationToken=50";
+    const hotel = "https://travel.yandex.ru/hotels/sochi/sample/";
+    const doc = new DOMParser().parseFromString(`
+      <h1>Отели и гостиницы в Химках</h1>
+      <article><div><section><div><h3><a href="/hotels/sochi/sample/?roomCount=1">Отель 4*</a></h3>
+      <div>Сочи • Гостиница</div><div aria-label="Оценка 4,9">4.9</div><a>1106 отзывов</a></div></section> <div>73 620 ₽</div> <div id="night-price">14&nbsp;ночей • 5 258 ₽ за&nbsp;ночь</div> <div>Двухместный номер</div> <div>До 15% баллами</div></div></article>
+      <section><h3><a href="/hotels/sochi/sample/?roomCount=2">Отель 4*</a></h3></section>
+      <nav><h3><a href="/hotels/himki/filter-flats/">Квартиры</a></h3></nav>
+      <script>window.__PRELOADED_REDUX_STATE__ = {"hotels":{"searchHotelsPage":{"search":{"data":{"hotels":[{"hotel":{"hotelSlug":"sochi/sample","coordinates":{"lat":43.570859,"lon":39.745833}}},{"hotel":{"hotelSlug":"sochi/hidden","coordinates":{"lat":43.6,"lon":39.7}}}]}}}}};<\/script>
+      <div aria-label="Яндекс Карты"><button aria-label="Развернуть карту"></button>
+      <div><h3><a href="/hotels/sochi/marker/">Отель с карты</a></h3><span>5.0569 отзывов • Гостиница</span></div></div>`, "text/html");
+    const equal = (actual, expected, label) => {
+      if (JSON.stringify(actual) !== JSON.stringify(expected)) throw Error(`${label}: ${JSON.stringify(actual)}`);
+    };
+    const list = parser.collect(doc, base);
+    const entry = list.find(row => row.org_id === "sochi/sample");
+    equal([entry.title, entry.rating, entry.reviews, entry.star_rating, entry.category_first, entry.url, entry.lat, entry.lon],
+      ["Отель", 4.9, 1106, 4, "Гостиница", hotel, 43.570859, 39.745833], "Карточка выдачи");
+    equal(entry.travel_offer, { nightly_price: 5258, checkin: "2026-11-27", checkout: "2026-12-11",
+      room: "Двухместный номер", adults: "2", children_ages: "", rooms: "1" }, "Цена за ночь, номер и параметры выдачи");
+    const priceLine = doc.querySelector("#night-price");
+    const previousPrice = priceLine.textContent;
+    priceLine.textContent = "14 ночей";
+    equal(parser.collect(doc, base).find(row => row.org_id === "sochi/sample").travel_offer, undefined,
+      "Полная цена многодневной поездки не используется как суточная");
+    priceLine.textContent = "1 ночь";
+    const oneNight = base.replace("2026-12-11", "2026-11-28");
+    equal(parser.collect(doc, oneNight).find(row => row.org_id === "sochi/sample").travel_offer?.nightly_price, 73620,
+      "Полная цена при одной ночи");
+    priceLine.textContent = previousPrice;
+    equal(list.some(row => row.org_id === "sochi/hidden"), false, "Скрытые карточки не добавляются из состояния");
+    equal(list.filter(row => row.org_id === "sochi/sample").length, 1, "Дубликаты ссылок");
+    doc.querySelector("button").setAttribute("aria-label", "Свернуть карту");
+    const map = parser.collect(doc, base);
+    equal(map.map(row => [row.org_id, row.rating, row.reviews]), [["sochi/marker", 5, 569]], "Карточка маркера");
+    const detailDoc = new DOMParser().parseFromString(`
+      <h1>Отель 4*</h1>
+      <h2>Номера</h2><div><h3>Двухместный номер</h3><ul><li>25 м²</li><li>1 двуспальная кровать</li></ul></div>
+      <h2>Об этом месте</h2><p>Количество номеров: 42</p>
+      <h2>Правила проживания</h2><div>Время заезда 14:00 Время выезда 12:00</div>
+      <h2>Удобства</h2><ul><li>Wi-Fi</li><li>Парковка</li></ul>
+      <h2>Где находится</h2><img src="https://static-maps.yandex.ru/v1?ll=39.745833,43.570859">
+      <script type="application/ld+json">{"@type":"Hotel","url":"${hotel}","name":"Отель","address":"Сочи, улица Фабрициуса, 7","aggregateRating":{"ratingValue":4.9,"reviewCount":1106},"amenityFeature":["Бассейн",{"name":"Лифт","value":false}]}<\/script>`, "text/html");
+    const detail = parser.parseDocument(detailDoc, hotel);
+    equal([detail.address, detail.lat, detail.lon, detail.reviews, detail.feature_state],
+      ["Сочи, улица Фабрициуса, 7", 43.570859, 39.745833, 1106, "collected"], "Детали карточки");
+    equal(detail.category_data.fields.amenities, ["Wi-Fi", "Парковка", "Бассейн"], "Удобства");
+    equal(detail.category_data.fields.room_count, 42, "Количество номеров в описании");
+    equal(detail.category_data.fields.room_characteristics, ["Двухместный номер: 25 м², 1 двуспальная кровать"], "Характеристики номера");
+    const json = detailDoc.querySelector('script[type="application/ld+json"]');
+    json.textContent = JSON.stringify({ ...JSON.parse(json.textContent), hasMap: "https://maps.yandex.ru/?pt=37.4,55.8&amp;l=map" });
+    const structuredMap = parser.parseDocument(detailDoc, hotel);
+    equal([structuredMap.lat, structuredMap.lon], [55.8, 37.4], "Координаты из hasMap");
+    equal([detail.category_data.fields.checkin_time, detail.category_data.fields.checkout_time], ["14:00", "12:00"], "Время заезда и выезда");
+    document.documentElement.dataset.testResult = "PASS";
+  } catch (error) {
+    output.textContent = error.stack || String(error);
+    document.documentElement.dataset.testResult = "FAIL";
+  }
+})();
+</script>

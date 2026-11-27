@@ -56,6 +56,7 @@ function detectDomain(url) {
     const u = new URL(url);
     const host = String(u.hostname || "").toLowerCase();
     const path = String(u.pathname || "");
+    if (host === "travel.yandex.ru" && /^\/hotels(?:\/|$)/.test(path)) return "travel";
     if (host.includes("google.") && path.startsWith("/maps")) return "google";
     if (host.includes("2gis.")) return "2gis";
     if ((host.includes("yandex.") || host.includes("ya.")) && path.startsWith("/maps")) return "yandex";
@@ -64,6 +65,7 @@ function detectDomain(url) {
 }
 
 function sourceLabel(source) {
+  if (source === "travel") return "Яндекс Путешествия";
   return source === "yandex" ? "Yandex" : source === "google" ? "Google" : source === "2gis" ? "2GIS" : "карта не открыта";
 }
 
@@ -87,7 +89,9 @@ async function ensureScripts(tab, source) {
 
   const files = source === "google"
     ? ["xlsx.full.min.js", "google_content.js", "overlay.js"]
-    : ["xlsx.full.min.js", "yandex_coordinates.js", "content.js", "overlay.js"];
+    : source === "travel"
+      ? ["xlsx.full.min.js", "travel_parser.js", "travel_content.js", "overlay.js"]
+      : ["xlsx.full.min.js", "yandex_coordinates.js", "content.js", "overlay.js"];
 
   try {
     await chrome.scripting.executeScript({ target: { tabId: tab.id }, files });

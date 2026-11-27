@@ -1,7 +1,7 @@
 {
   "manifest_version": 3,
   "name": "Maps Export Overlay: Yandex, Google, 2GIS",
-  "version": "1.13.1",
+  "version": "1.13.2",
   "description": "Сбор объектов с карт и досбор подробных данных по URL в фоновых вкладках.",
   "icons": {
     "16": "icons/icon-16.png",
@@ -35,7 +35,8 @@
     "https://www.google.com/maps/*",
     "https://maps.google.com/*",
     "https://*.2gis.ru/*",
-    "https://*.2gis.com/*"
+    "https://*.2gis.com/*",
+    "https://travel.yandex.ru/hotels/*"
   ],
   "content_scripts": [
     {
@@ -91,6 +92,18 @@
       "js": [
         "xlsx.full.min.js",
         "google_content.js",
+        "overlay.js"
+      ],
+      "run_at": "document_idle"
+    },
+    {
+      "matches": [
+        "https://travel.yandex.ru/hotels/*"
+      ],
+      "js": [
+        "xlsx.full.min.js",
+        "travel_parser.js",
+        "travel_content.js",
         "overlay.js"
       ],
       "run_at": "document_idle"

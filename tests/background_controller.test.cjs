@@ -456,7 +456,53 @@ async function waitForJob(status) {
   const activeTab = tabs.get(storage[JOB_KEY].workers.find(({ tab_id }) => Number.isInteger(tab_id)).tab_id);
   assert.equal(activeTab.windowId, compact.layout.working_window_ids[0]);
   assert.equal((await message({ type: "ENRICHMENT_STOP" })).ok, true);
-  console.log("PASS background controller: Yandex, 2GIS, force-reset and adjacent dashboard paths");
+  const travelId = "himki/sample-hotel";
+  const travelUrl = `https://travel.yandex.ru/hotels/${travelId}/`;
+  const travelKey = `travel:${travelId}`;
+  storage[SESSION_KEY].objects[travelKey] = {
+    object_key: travelKey,
+    source: "travel",
+    title: "Example hotel",
+    url: travelUrl + "?adults=2&checkinDate=2026-11-28",
+    travel_offer: { checkin: "2026-11-28", checkout: "2026-11-29", adults: "2", rooms: "1" }
+  };
+  assert.equal((await message({ type: "ENRICHMENT_GET_STATE" })).base_counts.travel, 1);
+  const travelStart = await message({ type: "ENRICHMENT_START", options: { source: "travel", workers: 1 } });
+  assert.equal(travelStart.ok, true);
+  assert.equal(storage[JOB_KEY].tasks[travelKey].org_id, travelId);
+  const travelTab = storage[JOB_KEY].workers[0].tab_id;
+  assert.equal(tabs.get(travelTab).url, travelUrl + "?checkinDate=2026-11-28&checkoutDate=2026-11-29&adults=2&roomCount=1");
+  tabsUpdatedHandler(travelTab, { url: "https://travel.yandex.ru/showcaptcha?test=1" });
+  await waitForJob("blocked");
+  assert.equal(storage[JOB_KEY].tasks[travelKey].status, "captcha");
+  assert.equal((await message({ type: "ENRICHMENT_RESUME" })).ok, true);
+  workerResponse = { ok: true, result: { source: "travel", org_id: travelId, title: "Example hotel" } };
+  await message({ type: "ENRICHMENT_WORKER_READY" }, { tab: { id: storage[JOB_KEY].workers[0].tab_id } });
+  await waitForJob("completed");
+  assert.equal((await message({ type: "ENRICHMENT_GET_STATE" })).saved_counts.travel, 1);
+
+  const travelXlsx = await message({
+    type: "ENRICHMENT_START",
+    options: { workbook: {}, restartWorkbook: true, workers: 1, links: [
+      { row: 1, url: travelUrl + "?adults=2" },
+      { row: 2, url: travelUrl + "#rooms" },
+      { row: 3, url: "https://travel.yandex.ru/hotels/himki/" },
+      { row: 4, url: "https://travel.yandex.ru/hotels/himki/filter-pool/" },
+      { row: 5, url: "https://travel.yandex.ru/hotels/himki/sample-hotel/reviews/" },
+      { row: 6, url: "https://travel.yandex.ru.maps.example/hotels/himki/sample-hotel/" },
+      { row: 7, url: "https://travel.yandex.ru/maps/org/object/1234567890/" },
+      { row: 8, url: "https://yandex.ru/maps/org/object/1234567890/" }
+    ] }
+  });
+  assert.equal(travelXlsx.ok, true);
+  const importedTasks = Object.values(storage[JOB_KEY].tasks);
+  assert.equal(importedTasks.length, 2);
+  const travelTask = importedTasks.find(({ source }) => source === "travel");
+  assert.equal(travelTask.url, travelUrl);
+  assert.deepEqual(travelTask.rows, [1, 2]);
+  assert.equal(importedTasks.some(({ source }) => source === "yandex"), true);
+  assert.equal((await message({ type: "ENRICHMENT_STOP" })).ok, true);
+  console.log("PASS background controller: Yandex Maps, Yandex Travel, 2GIS, force-reset and adjacent dashboard paths");
 })().catch((error) => {
   console.error(error);
   process.exitCode = 1;

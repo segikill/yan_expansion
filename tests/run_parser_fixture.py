@@ -107,6 +107,7 @@ def main() -> int:
         Path(__file__).with_name("overlay_ui.test.html").resolve(),
         Path(__file__).with_name("two_gis_collector.test.html").resolve(),
         Path(__file__).with_name("two_gis_detail_parser.test.html").resolve(),
+        Path(__file__).with_name("travel_parser.test.html").resolve(),
     ]
     with sync_playwright() as playwright:
         browser = playwright.chromium.launch(executable_path=str(EDGE_PATH), headless=True)

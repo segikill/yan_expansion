@@ -125,6 +125,29 @@
         shared_light_theme_applied: initialTheme === "theme-light",
         shared_theme_updates_live: host?.dataset.theme === "theme-neon"
       };
+      const collector = globalThis.__MAPS_EXPORT_COLLECTOR__;
+      collector.source = "travel";
+      let offset = "0";
+      const card = { org_id: "abkhazia/emark", title: "Эмарк", url: "https://travel.yandex.ru/hotels/abkhazia/emark/" };
+      collector.context = () => ({ query: "Абхазия", map_state: { navigationToken: offset } });
+      collector.collect = () => offset === "0"
+        ? [{ ...card, lat: 43.2, lon: 40.3, travel_offer: { nightly_price: 5258, room: "Двухместный номер", checkin: "2026-11-27" } }]
+        : [{ ...card, lat: 0, lon: 0 }, { org_id: "abkhazia/aitar", title: "Айтар Море", lat: 42.99 }];
+      const fix = host.shadowRoot.getElementById("fix");
+      fix.click();
+      await wait(30);
+      offset = "50";
+      fix.click();
+      await wait(30);
+      host.shadowRoot.getElementById("xlsx").click();
+      const [headers, ...exportRows] = globalThis.__TEST_WORKBOOK__.Sheets.objects.rows;
+      const emark = exportRows.find((row) => row[headers.indexOf("title")] === "Эмарк");
+      checks.travel_pages_merged = exportRows.length === 4 && testStorage[SESSION_KEY].snapshots.at(-1).navigation_token === "50";
+      checks.travel_nightly_offer_exported = emark?.[headers.indexOf("Цена за ночь, ₽")] === 5258 &&
+        emark[headers.indexOf("Номер в предложении")] === "Двухместный номер";
+      const aitar = exportRows.find((row) => row[headers.indexOf("title")] === "Айтар Море");
+      checks.travel_coordinate_pair_preserved = emark?.[headers.indexOf("lat")] === 43.2 &&
+        emark[headers.indexOf("lon")] === 40.3 && aitar?.[headers.indexOf("lat")] === "" && aitar[headers.indexOf("lon")] === "";
       const passed = Object.values(checks).every(Boolean);
       document.documentElement.dataset.testResult = passed ? "PASS" : "FAIL";
       const output = document.createElement("pre");

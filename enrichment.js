@@ -134,6 +134,13 @@
     return applyTheme;
   }
 
+  const SOURCE_LABELS = { yandex: "Яндекс Карты", "2gis": "2ГИС", travel: "Яндекс Путешествия" };
+  const SOURCE_HINTS = {
+    yandex: "Досбор прочитает обзор и вкладку «Особенности» карточки Яндекс Карт.",
+    "2gis": "Досбор откроет раздел «Инфо» карточки 2ГИС.",
+    travel: "Досбор прочитает карточку отеля, условия проживания и удобства."
+  };
+
   function selectedSource() {
     return $("detailSource").value;
   }
@@ -243,7 +250,7 @@
     lastState = state;
     const job = state.job;
     const jobLocked = ["running", "paused", "blocked"].includes(job.status);
-    if (jobLocked && ["yandex", "2gis", "xlsx"].includes(job.source)) $("detailSource").value = job.source;
+    if (jobLocked && ["xlsx", ...Object.keys(SOURCE_LABELS)].includes(job.source)) $("detailSource").value = job.source;
     const source = jobLocked ? job.source : selectedSource();
     const fromFile = source === "xlsx";
     const savedFile = fromFile && Boolean(state.xlsx_queue);
@@ -279,17 +286,17 @@
     $("progressTrack").setAttribute("aria-valuenow", String(percent));
     $("progressTrack").setAttribute("aria-valuetext", total ? `${done} из ${total}` : "Очередь не создана");
     $("progressText").textContent = total ? `\u041e\u0431\u0440\u0430\u0431\u043e\u0442\u0430\u043d\u043e ${done} \u0438з ${total}` : "\u0413\u043e\u0442\u043e\u0432\u043e \u043a \u0437\u0430\u043f\u0443\u0441\u043a\u0443";
-    $("baseCount").textContent = fromFile ? `${sourceBaseCount} строк со ссылками · ${state.saved_counts?.xlsx || 0} результатов` : `${sourceBaseCount} объектов ${source === "2gis" ? "2ГИС" : "Яндекса"} в базовом сборе · ${state.result_count || 0} результатов всего`;
-    $("sourceModeHint").textContent = fromFile ? "Поддерживаются ссылки на карточки Яндекса и 2ГИС." : source === "2gis"
-      ? "Отдельная очередь откроет /tab/info в 1–12 рабочих вкладках и прочитает структурированный объект карточки."
-      : "Карточки Яндекса откроются в фоновых вкладках: обзор и вкладка «Особенности».";
+    $("baseCount").textContent = fromFile ? `${sourceBaseCount} строк со ссылками · ${state.saved_counts?.xlsx || 0} результатов` : `${SOURCE_LABELS[source] || source} · ${sourceBaseCount} объектов в базовом сборе · ${state.result_count || 0} результатов всего`;
+    $("sourceModeHint").textContent = fromFile
+      ? "Поддерживаются карточки Яндекс Карт, Яндекс Путешествий и 2ГИС."
+      : SOURCE_HINTS[source];
     if (sourceBaseCount && $("statusText").textContent.startsWith("\u0421\u043d\u0430\u0447\u0430\u043b\u0430")) {
       setStatus("\u0411\u0430\u0437\u043e\u0432\u044b\u0435 URL \u0433\u043e\u0442\u043e\u0432\u044b. \u0412\u044b\u0431\u0435\u0440\u0438\u0442\u0435 \u043f\u0430\u0440\u0430\u043c\u0435\u0442\u0440\u044b \u0438 \u0437\u0430\u043f\u0443\u0441\u0442\u0438\u0442\u0435 \u0434\u043e\u0441\u0431\u043e\u0440.");
     }
 
     $("startLabel").textContent = savedFile ? "Начать заново" : "Запустить";
     $("btnStart").disabled = (!sourceBaseCount && !(savedFile && !inputWorkbook)) || jobLocked;
-    $("btnStart").title = savedFile && !inputWorkbook ? "Заново обработать сохранённый XLSX" : !sourceBaseCount && fromFile ? "Выберите лист и столбец со ссылками" : !sourceBaseCount ? `Сначала зафиксируйте карточки ${source === "2gis" ? "2ГИС" : "Яндекса"} на карте` : "Запустить новую очередь досбора";
+    $("btnStart").title = savedFile && !inputWorkbook ? "Заново обработать сохранённый XLSX" : !sourceBaseCount && fromFile ? "Выберите лист и столбец со ссылками" : !sourceBaseCount ? "Сначала зафиксируйте карточки в базовом сборе" : "Запустить новую очередь досбора";
     for (const id of ["detailSource", "workers", "maxAttempts", "timeout", "xlsxFile"]) $(id).disabled = jobLocked;
     $("scope").disabled = jobLocked || fromFile;
     $("xlsxSheet").disabled = jobLocked || !inputWorkbook;
@@ -307,11 +314,11 @@
     const blockedWorker = job.workers?.find((worker) => ["captcha", "rate_limited"].includes(worker.status));
     $("alert").classList.toggle("hidden", job.status !== "blocked");
     const isRateLimited = blockedWorker?.status === "rate_limited";
-    const provider = job.tasks?.[blockedWorker?.current_object_key]?.source === "2gis" || job.source === "2gis" ? "2ГИС" : "Яндекс";
+    const provider = SOURCE_LABELS[job.tasks?.[blockedWorker?.current_object_key]?.source || job.source] || "Сайт";
     $("alertTitle").textContent = isRateLimited ? `Лимит ${provider}` : "CAPTCHA";
-    $("alertText").textContent = job.status === "blocked" ? `${provider} запросил проверку. Очередь остановлена, данные сохранены.` : "";
+    $("alertText").textContent = job.status === "blocked" ? `Требуется проверка. ${provider} · очередь остановлена, данные сохранены.` : "";
     if (job.status === "blocked" && isRateLimited) {
-      $("alertText").textContent = `${provider} временно ограничил загрузку страниц. Прогресс сохранён; продолжите позже или с меньшим числом вкладок.`;
+      $("alertText").textContent = `${provider} · временное ограничение загрузки. Прогресс сохранён. Продолжите позже или с меньшим числом вкладок.`;
     }
     $("btnOpenWorker").dataset.workerId = blockedWorker?.worker_id || "";
     renderWorkers(job);
@@ -321,7 +328,13 @@
   async function refresh() {
     try {
       const response = await send("ENRICHMENT_GET_STATE");
-      if (!lastState && response.job.source === "xlsx") $("detailSource").value = "xlsx";
+      if (!lastState) {
+        if (response.job.source === "xlsx") $("detailSource").value = "xlsx";
+        else if (response.job.source === "travel" ||
+          (response.base_counts?.travel && !response.base_counts?.yandex && !response.base_counts?.["2gis"])) {
+          $("detailSource").value = "travel";
+        }
+      }
       render(response);
     } catch (error) {
       setStatus(String(error?.message || error), true);
@@ -375,7 +388,7 @@
   function publicUrl(value) {
     try {
       const url = new URL(value);
-      if (/\/maps\/org\//i.test(url.pathname)) return `${url.origin}${url.pathname}`;
+      if (/\/maps\/org\//i.test(url.pathname) || url.hostname === "travel.yandex.ru") return `${url.origin}${url.pathname}`;
       return url.toString();
     } catch {
       return String(value || "");
@@ -487,7 +500,7 @@
     }
   }
 
-  function importedCoordinatePair(latValue, lonValue) {
+  function validCoordinatePair(latValue, lonValue) {
     const latitude = String(latValue ?? "").trim().replace(",", ".");
     const longitude = String(lonValue ?? "").trim().replace(",", ".");
     if (!latitude || !longitude) return null;
@@ -541,6 +554,7 @@
     }
 
     const fields = Object.keys(detailRow({}, {}));
+    if ([...byRow.values()].some((task) => task.source === "travel")) fields.push("Характеристики номеров");
     const columns = new Map();
     const added = [];
     for (const name of fields) {
@@ -565,7 +579,8 @@
       const link = sheet[cellAddress(r, linkColumn)];
       const detail = task ? results[task.object_key] || task : {};
       const row = task ? detailRow({ source: task.source }, detail) : {};
-      const coordinates = importedCoordinatePair(detail.lat, detail.lon);
+      if (task?.source === "travel") row["Характеристики номеров"] = travelOfferFields({}, detail)["Характеристики номеров"];
+      const coordinates = validCoordinatePair(detail.lat, detail.lon);
       row["Широта"] = coordinates?.lat;
       row["Долгота"] = coordinates?.lon;
       const oldLat = sheet[cellAddress(r, latColumn)]?.v;
@@ -594,6 +609,7 @@
   function detailRow(base, detail) {
     const fields = detail.category_data?.fields || {};
     const categories = exportCategories(base, detail);
+    const coordinates = validCoordinatePair(detail.lat, detail.lon) || validCoordinatePair(base.lat, base.lon);
     return {
       "Источник": base.source || detail.source || "",
       "ID объекта": detail.org_id || base.org_id || "",
@@ -606,8 +622,8 @@
       "Рейтинг": detail.rating || base.rating || "",
       "Количество отзывов": detail.reviews || base.reviews || "",
       "Количество фотографий": base.photos_count || "",
-      "Широта": detail.lat || base.lat || "",
-      "Долгота": detail.lon || base.lon || "",
+      "Широта": coordinates?.lat ?? "",
+      "Долгота": coordinates?.lon ?? "",
       "URL": publicUrl(detail.url || base.url),
       "opening_hours": detail.opening_hours || [],
       "working_status": detail.working_status || "",
@@ -624,7 +640,7 @@
       "Способы оплаты": fields.payment_methods || [],
       "Количество звёзд": fields.star_rating || "",
       "Тип гостиницы": fields.hotel_type || "",
-      "Количество номеров": fields.room_count || "",
+      "Количество номеров": fields.room_count || base.room_count || "",
       "Типы номеров": fields.room_types || [],
       "Цена номера": fields.room_price || "",
       "Время заезда": fields.checkin_time || "",
@@ -650,6 +666,20 @@
     };
   }
 
+  function travelOfferFields(base, detail) {
+    const offer = base.travel_offer || detail.travel_offer || {};
+    return {
+      "Цена за ночь, ₽": offer.nightly_price || "",
+      "Номер в предложении": offer.room || "",
+      "Характеристики номеров": detail.category_data?.fields?.room_characteristics || [],
+      "Заезд для цены": offer.checkin || "",
+      "Выезд для цены": offer.checkout || "",
+      "Взрослых для цены": offer.adults || "",
+      "Возраст детей для цены": offer.children_ages || "",
+      "Номеров в поиске": offer.rooms || ""
+    };
+  }
+
   async function exportWorkbook() {
     try {
       if (selectedSource() === "xlsx") {
@@ -665,7 +695,7 @@
       const results = response.results || {};
       const objects = Object.entries(session.objects || {}).map(([objectKey, base]) => {
         const detail = results[objectKey] || {};
-        return detailRow(base, detail);
+        return { ...detailRow(base, detail), ...(base.source === "travel" ? travelOfferFields(base, detail) : {}) };
       });
 
       if (!objects.length) throw new Error("\u0412 \u0431\u0430зовой \u0441\u0435\u0441\u0441\u0438\u0438 \u043d\u0435т \u043e\u0431\u044a\u0435\u043a\u0442\u043eв");
@@ -678,6 +708,7 @@
         "Парковка — открытая", "Парковка — уличная", "Парковка — вместимость", "Парковка — доступ", "Парковка — уровень", "Парковка — покрытие", "Все особенности", "Статус досбора", "Ошибка досбора"
       ];
 
+      if (objects.some((row) => row["Источник"] === "travel")) columns.push(...Object.keys(travelOfferFields({}, {})));
       const workbook = XLSX.utils.book_new();
       XLSX.utils.book_append_sheet(workbook, sheetFromRows(columns, objects), "Организации");
 
