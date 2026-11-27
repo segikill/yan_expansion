@@ -42,5 +42,46 @@
       setTimeout(refresh, 2000);
     }
   }
+  const resizeTarget = $("resizeTarget");
+  const resizeWidth = $("resizeWidth");
+  const resizeHeight = $("resizeHeight");
+  let windows = [];
+
+  function selectWindow() {
+    const selected = windows.find(({ id }) => String(id) === resizeTarget.value);
+    resizeWidth.value = selected?.width ?? "";
+    resizeHeight.value = selected?.height ?? "";
+    $("resizeApply").disabled = !selected;
+  }
+
+  async function loadWindows(type, dimensions = {}) {
+    $("resizeApply").disabled = true;
+    const selected = resizeTarget.value;
+    try {
+      const response = await api.runtime.sendMessage({ type, ...dimensions });
+      if (!response?.ok) throw new Error(response?.error || "Не удалось прочитать размеры окон.");
+      windows = response.windows;
+      resizeTarget.replaceChildren(...windows.map(({ id, label }) => new Option(label, String(id))));
+      if (windows.some(({ id }) => String(id) === selected)) resizeTarget.value = selected;
+      selectWindow();
+      $("resizeStatus").textContent = dimensions.window_id
+        ? `Размер окна: ${resizeWidth.value} × ${resizeHeight.value}` : "";
+    } catch (error) {
+      selectWindow();
+      $("resizeStatus").textContent = String(error?.message || error);
+    }
+  }
+
+  $("windowSize").addEventListener("toggle", (event) => {
+    if (event.currentTarget.open) loadWindows("ENRICHMENT_WINDOW_SIZES");
+  });
+  resizeTarget.addEventListener("change", selectWindow);
+  $("resizeForm").addEventListener("submit", (event) => {
+    event.preventDefault();
+    loadWindows("ENRICHMENT_RESIZE_WINDOW", {
+      window_id: Number(resizeTarget.value), width: resizeWidth.valueAsNumber, height: resizeHeight.valueAsNumber
+    });
+  });
+
   refresh();
 })();

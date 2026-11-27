@@ -143,7 +143,7 @@
   }
 
   function publicState(job, resultCount, baseCount, savedCounts) {
-    return { job, result_count: resultCount, base_count: baseCount.total, base_counts: baseCount, saved_counts: savedCounts, controller_version: "1.13" };
+    return { job, result_count: resultCount, base_count: baseCount.total, base_counts: baseCount, saved_counts: savedCounts, controller_version: "1.13.1" };
   }
 
   async function getState() {
@@ -396,7 +396,8 @@
           const props = { url: "about:blank", active: false };
           let tab;
           if (lane) {
-            tab = await api.tabs.create({ ...props, windowId: lane.windowId }).catch(() => null);
+            tab = await takeWindowPlaceholder(lane);
+            tab ||= await api.tabs.create({ ...props, windowId: lane.windowId }).catch(() => null);
             if (tab) lane.ownedTabs.add(tab.id);
           }
           tab ||= await api.tabs.create(props);
@@ -883,24 +884,46 @@
 
   async function openSummaryWindow(bounds) {
     const [existing, ...duplicates] = await summaryTabs();
-    if (existing) {
+    const window = existing ? await api.windows.get(existing.windowId).catch(() => null) : null;
+    if (window?.type === "normal") {
       await Promise.allSettled(duplicates.map(({ id }) => api.tabs.remove(id)));
-      await api.windows.update(existing.windowId, { state: "normal" });
-      await api.windows.update(existing.windowId, { ...bounds, focused: true });
+      if (window.state === "minimized") await api.windows.update(window.id, { state: "normal" });
+      await api.windows.update(window.id, { focused: true });
       summaryTab = existing;
       return existing;
     }
-    const options = { ...bounds, url: summaryUrl, focused: true };
-    const created = await api.windows.create({ ...options, type: "popup" })
-      .catch(() => api.windows.create({ ...options, type: "normal" }));
+
+    const created = await api.windows.create({
+      ...bounds, url: summaryUrl, type: "normal", focused: true
+    });
     const [tab] = created.tabs?.length ? created.tabs : await api.tabs.query({ windowId: created.id });
-    if (!tab) throw new Error("Не удалось найти вкладку сводки.");
+    if (!tab) {
+      await api.windows.remove(created.id).catch(() => {});
+      throw new Error("Не удалось найти вкладку сводки.");
+    }
     summaryTab = tab;
+    // Upgrade a popup created by earlier versions only after the new summary is available.
+    await Promise.allSettled([existing, ...duplicates].filter(Boolean).map(({ id }) => api.tabs.remove(id)));
     return tab;
   }
 
   let rotation;
   const rotationDwellMs = 900;
+
+  async function takeWindowPlaceholder(lane) {
+    const id = lane.placeholderTabId;
+    if (!Number.isInteger(id)) return null;
+    lane.placeholderTabId = null;
+    const tab = await api.tabs.get(id).catch(() => null);
+    if (tab?.windowId === lane.windowId && (tab.pendingUrl || tab.url) === "about:blank") return tab;
+    lane.ownedTabs.delete(id);
+    return null;
+  }
+
+  async function removeWindowPlaceholder(lane) {
+    const tab = await takeWindowPlaceholder(lane);
+    if (tab) await api.tabs.remove(tab.id).catch(() => {});
+  }
 
   async function closeRotationWindows(runId, mode = rotation) {
     if (mode?.runId !== runId) return { closed: new Set(), pending: [] };
@@ -919,7 +942,7 @@
         if (!window) return;
         const tabs = window.tabs || await api.tabs.query({ windowId: lane.windowId }).catch(() => null);
         if (!tabs || tabs.some(({ id }) => !lane.ownedTabs.has(id))) {
-          if (tabs) await api.tabs.remove(lane.seedTabId).catch(() => {});
+          if (tabs) await removeWindowPlaceholder(lane);
           return;
         }
         try {
@@ -982,7 +1005,10 @@
             if (!grouped.has(tab_id)) {
               if (rotation !== mode || mode.closing || pendingStops) break;
               lane.ownedTabs.add(tab_id);
-              await api.tabs.move(tab_id, { windowId: lane.windowId, index: -1 }).catch(() => {});
+              const moved = await api.tabs.move(tab_id, { windowId: lane.windowId, index: -1 }).catch(() => null);
+              if (moved && Number.isInteger(lane.placeholderTabId)) {
+                await serial(() => removeWindowPlaceholder(lane));
+              }
             }
           }
           if (rotation !== mode || mode.closing || pendingStops) break;
@@ -1006,7 +1032,7 @@
       if (!mode.closing) {
         const job = await loadJob();
         if (job.run_id !== mode.runId || !["completed", "stopped"].includes(job.status)) {
-          await api.tabs.remove(lane.seedTabId).catch(() => {});
+          await serial(() => removeWindowPlaceholder(lane));
         }
       }
     }
@@ -1047,7 +1073,7 @@
           await api.windows.remove(working.id).catch(() => {});
           throw new Error("Не удалось найти рабочее окно.");
         }
-        lanes.push({ windowId: working.id, seedTabId: seed.id, ownedTabs: new Set([seed.id]), first: index * groupSize, last: (index + 1) * groupSize });
+        lanes.push({ windowId: working.id, placeholderTabId: seed.id, ownedTabs: new Set([seed.id]), first: index * groupSize, last: (index + 1) * groupSize });
       }
       const summary = await openSummaryWindow(bounds.at(-1));
       const mode = { runId: job.run_id, split: parallel, summaryTabId: summary.id, summaryBounds: bounds.at(-1), lanes };
@@ -1134,8 +1160,36 @@
     return { ok: true };
   }
 
+  async function resizeRunWindows(message, sender) {
+    if (sender.url !== summaryUrl || !Number.isInteger(sender.tab?.windowId)) {
+      throw new Error("Изменение размеров доступно из сводки.");
+    }
+    const summaryId = sender.tab.windowId;
+    const ids = [summaryId, ...(rotation && !rotation.closing ? rotation.lanes.map(({ windowId }) => windowId) : [])];
+    if (message.type === "ENRICHMENT_RESIZE_WINDOW") {
+      const { window_id: id, width, height } = message;
+      if (!ids.includes(id) || ![width, height].every((value) => Number.isInteger(value) && value > 0 && value <= 32768)) {
+        throw new Error("Проверьте окно и размеры.");
+      }
+      const current = await api.windows.get(id);
+      if (current.state !== "normal") await api.windows.update(id, { state: "normal" });
+      await api.windows.update(id, { width, height });
+    }
+    const windows = await Promise.all(ids.map((id) => api.windows.get(id).catch(() => null)));
+    return {
+      ok: true,
+      windows: windows.flatMap((window, index) => window ? [{
+        id: window.id, width: window.width, height: window.height,
+        label: index === 0 ? "Сводка" : `Рабочее окно ${index}`
+      }] : [])
+    };
+  }
+
   async function handleMessage(message, sender) {
     switch (message?.type) {
+      case "ENRICHMENT_WINDOW_SIZES":
+      case "ENRICHMENT_RESIZE_WINDOW":
+        return serial(() => resizeRunWindows(message, sender));
       case "ENRICHMENT_GET_SUMMARY": {
         if (sender.url === summaryUrl && sender.tab) summaryTab = sender.tab;
         const { job, saved_counts } = await getState();

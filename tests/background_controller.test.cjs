@@ -184,12 +184,16 @@ async function waitForJob(status) {
   assert.equal(withSummary.summary_opened, true);
   assert.equal(withSummary.arranged, 1);
   assert.equal(windowCreates.at(-1).url, browser.runtime.getURL("enrichment-summary.html"));
+  assert.equal(windowCreates.at(-1).type, "normal");
   assert.equal(windowCreates.at(-1).tabId, undefined);
   const summaryFixture = [...tabs.values()].find((tab) => tab.windowId === 3);
   delete summaryFixture.url;
   const createsBeforeReuse = windowCreates.length;
+  const updatesBeforeReuse = windowUpdates.length;
   assert.equal((await message({ ...arrange, with_summary: true }, dashboard)).summary_opened, true);
   assert.equal(windowCreates.length, createsBeforeReuse);
+  const summaryUpdates = windowUpdates.slice(updatesBeforeReuse).filter(({ id }) => id === summaryFixture.windowId);
+  assert.deepEqual(summaryUpdates.map(({ properties }) => ({ ...properties })), [{ focused: true }]);
 
   let releaseParse;
   parseGate = new Promise((resolve) => { releaseParse = resolve; });
@@ -414,6 +418,11 @@ async function waitForJob(status) {
     storage[JOB_KEY].workers.filter(({ tab_id }) => tabs.get(tab_id)?.windowId === windowId).length
   );
   assert.deepEqual(Array.from(groupedCounts), [4, 4, 1]);
+  for (const [index, windowId] of batched.layout.working_window_ids.entries()) {
+    const group = await browser.tabs.query({ windowId });
+    assert.equal(group.length, groupedCounts[index]);
+    assert.ok(group.every((tab) => tab.url.startsWith("https://yandex.ru/maps/")));
+  }
   assert.equal(new Set(assignments.map(({ object_key }) => object_key)).size, 9);
   assert.equal(new Set(assignments.map(({ worker_id }) => worker_id)).size, 9);
   assert.ok(Date.parse(assignments[4].at) - Date.parse(assignments[0].at) >= 400);
